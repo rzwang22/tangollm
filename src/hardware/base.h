@@ -36,7 +36,9 @@ enum class LayerType {
   MLA_MIXED,
   ABSORBED_MLA_GEN,
   ABSORBED_MLA_SUM,
-  MAX
+  MAX,
+  GRAPH_AGGREGATION,
+  GRAPH_FFN
 };
 
 // forward declaration

@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "common/type.h"
+#include "scheduler/graph.h"
 
 namespace llm_system {
 
@@ -124,6 +125,7 @@ class BatchedSequence {
   std::vector<Sequence::Ptr> sequence;
   std::vector<int> seq_ids;
   Scheduler_ptr scheduler;
+  Graph graph;
 };
 
 }  // namespace llm_system

@@ -42,14 +42,33 @@ void TimeStamp::set_status(const StatusBoard& output_status) {
   status.start_time = status.device_time;
   status.end_time = output_status.device_time;
 
+  auto serialize_shape = [](const std::vector<int>& shape) {
+    std::string res = "(";
+    for (size_t i = 0; i < shape.size(); ++i) {
+      res += std::to_string(shape[i]) + (i == shape.size() - 1 ? "" : ", ");
+    }
+    res += ")";
+    return res;
+  };
+
   if (status.isTensorVec) {
     for (auto tensor : status.tensor_vec) {
+      std::vector<int> shape = tensor->getShape();
+      printf("input tensor name: %s, shape: %s\n", 
+            tensor->name.c_str(), serialize_shape(shape).c_str());
       status.input_tensor_vec_shape.push_back(tensor->getShape());
     }
     for (auto tensor : output_status.tensor_vec) {
+      std::vector<int> shape = tensor->getShape();
+      printf("output tensor name: %s, shape: %s\n", 
+            tensor->name.c_str(), serialize_shape(shape).c_str());
       status.output_tensor_vec_shape.push_back(tensor->getShape());
     }
   } else {
+    printf("status.tensor name: %s, input_shape: %s, output_shape: %s\n", 
+          status.tensor->name.c_str(), 
+          serialize_shape(status.tensor->shape).c_str(),
+          serialize_shape(output_status.tensor->shape).c_str());
     status.input_tensor_shape = status.tensor->shape;
     status.output_tensor_shape = output_status.tensor->shape;
   }

@@ -10,6 +10,7 @@
 #include "hardware/hardware_config.h"
 #include "model/model_config.h"
 #include "scheduler/sequence.h"
+#include "scheduler/graph.h"
 
 namespace llm_system {
 
@@ -34,7 +35,7 @@ class Scheduler : public std::enable_shared_from_this<Scheduler> {
 
   void clear();
 
-  void pushSeq(int num_seq);
+  void pushSeq(int num_seq, int graph_id);
   void pushDummySeq(int input_len = 256, int max_len = 1024);
   void pushRealSeq(int num_seq);
 
@@ -48,9 +49,9 @@ class Scheduler : public std::enable_shared_from_this<Scheduler> {
 
   std::vector<BatchedSequence::Ptr> getAllMetadata();
   BatchedSequence::Ptr getMetadata(int dp_rank);
-  BatchedSequence::Ptr getMaxMetadata(int num_expert, int top_k, Ptr scheduler = nullptr);
+  BatchedSequence::Ptr getMaxMetadata(int num_expert, int top_k, Ptr scheduler = nullptr, int graph_id = 0);
 
-  std::vector<BatchedSequence::Ptr> setMetadata();
+  std::vector<BatchedSequence::Ptr> setMetadata(int graph_id = 0);
   std::vector<Sequence::Ptr> updateScheduler(time_ns time = 0);
   std::vector<Sequence::Ptr> updateSchedulerSumGenSplit(time_ns time = 0);
 
@@ -67,7 +68,7 @@ class Scheduler : public std::enable_shared_from_this<Scheduler> {
 
   void getActualArrivalTime(int num_iter);
 
-  void fillSequenceQueue(time_ns iter_time = 0, time_ns total_time = 0);
+  void fillSequenceQueue(time_ns iter_time = 0, time_ns total_time = 0, int graph_id = 0);
 
   // time to fill running queue
   void fillRunningQueue(time_ns time = 0);
@@ -103,6 +104,8 @@ class Scheduler : public std::enable_shared_from_this<Scheduler> {
   ModelConfig& model_config;
   std::vector<SequenceInfo::Ptr> sequences_info;
   std::string expert_file_path;
+
+  std::vector<Graph> graph_list;
   
   void initRunningQueue(); // juhwan
   

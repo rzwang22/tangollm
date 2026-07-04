@@ -160,6 +160,18 @@ Tensor::Ptr Module::get_cache(std::string name, int seq_idx, int kv_idx, bool co
   }
 }
 
+Tensor::Ptr Module::get_cache(std::string name) {
+  if (auto tensor = tensor_list.find(name); tensor != tensor_list.end()) {
+    Tensor::Ptr return_tensor = tensor->second;
+    return_tensor->setMemoryObject();
+    return return_tensor;
+  } else {
+    std::cout << name << std::endl;
+    fail("Unvalid cached tensor request");
+    return nullptr;
+  }
+}
+
   void Module::set_tensor_module() {
     Tensor::Ptr tensor;
     for (auto& _tensor : tensor_list) {

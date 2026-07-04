@@ -440,7 +440,7 @@ std::vector<Stat> Cluster::runIteration(int iter, std::string file_name) {
   scheduler->fillSequenceQueue();
   scheduler->fillRunningQueue();
 
-  // hitting
+  // // hitting
   scheduler->hittingQueue(10000);
 
   if (config.disagg_system) {
@@ -473,7 +473,8 @@ std::vector<Stat> Cluster::runIterationMixed(int iter, std::ofstream &csv) {
       exportToCSV(csv, stat_list);
     }
 
-    auto metadata = scheduler->setMetadata();
+    std::vector<BatchedSequence::Ptr> metadata = scheduler->setMetadata(i%scheduler->graph_list.size());
+    scheduler->printStatus();
     run(metadata);
     time_ns time = get_device(0)->status.device_time;
 
@@ -517,7 +518,13 @@ std::vector<Stat> Cluster::runIterationMixed(int iter, std::ofstream &csv) {
     token_list = scheduler->updateScheduler(time);
     addLatency(stat_list, token_list, total_time);
 
-    scheduler->fillSequenceQueue(time, total_time);
+    scheduler->printStatus();
+    if(!scheduler->model_config.graph){
+      scheduler->fillSequenceQueue(time, total_time);
+    }
+    else{
+      scheduler->fillSequenceQueue(time, total_time, (i+1)%scheduler->graph_list.size());
+    }
     scheduler->fillRunningQueue();
   }
 

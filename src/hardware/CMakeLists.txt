@@ -14,4 +14,5 @@ target_sources(
     attention_sum_impl.cpp
     attention_gen_impl.cpp
     attention_mixed_impl.cpp
+    GNN_impl.cpp
 )

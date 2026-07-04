@@ -9,6 +9,8 @@
 #include "module/layer.h"
 #include "module/module_graph.h"
 
+#include "scheduler/graph.h"
+
 using namespace llm_system;
 
 int main(int argc, char *argv[]) {
@@ -202,6 +204,7 @@ int main(int argc, char *argv[]) {
   system_config.mem_cap_limit = config["simulation"]["mem_cap_limit"].as<bool>();
 
   model_config.dataset = data_name;
+  model_config.graph = config["model"]["graph"].as<bool>();
 
   if (!data_name.compare("synthesis")) {
     expert_file_path = "none";
@@ -225,11 +228,15 @@ int main(int argc, char *argv[]) {
       Scheduler::Create(system_config, model_config, expert_file_path,
                         max_batch_size, 8192, max_process_token);
 
+  if(model_config.graph){
+    scheduler->graph_list = loadGraphList(config["model"]["graph_file"].as<std::string>());
+  }
+
   Cluster::Ptr cluster = Cluster::Create(system_config, scheduler);
 
   Model model(model_config, cluster, scheduler);
 
-  bool out_of_memory = cluster->checkMemorySize();
+  bool out_of_memory = false; //cluster->checkMemorySize();
   cluster->set_dependency();
 
   std::cout << "-----------------------------------" << std::endl;

@@ -1,13 +1,15 @@
 model:
-  model_name: deepseekV3
+  model_name: mixtral
+  graph: on
+  graph_file: /home/dcg/GOFA/graphs.txt
 
 system:
   gpu_gen: B100 # e.g. A100, H100, B100, B200 (currently only support 4 generation)
   nvlink_gen: 5
   infiniband_gen: 800
   num_node: 1
-  num_device: 8
-  processor_type: GPU
+  num_device: 1
+  processor_type: GPU+LOGIC
   distribution:
     expert_tensor_degree: 1
     none_expert_tensor_degree: 1
@@ -21,10 +23,10 @@ system:
     use_absorb: on
     use_flash_mla: on
     use_flash_attention: on
-    reuse_kv_cache: on
+    reuse_kv_cache: off
     kv_cache_reuse_rate: 0.0
-    prefill_mode: off
-    decode_mode: on
+    prefill_mode: on
+    decode_mode: off
 
 serving:
   max_batch_size: 32
@@ -33,7 +35,7 @@ serving:
 simulation:
   data: synthesis
   input_len: 1024
-  output_len: 10
+  output_len: 1
   precision_byte: 1
   skewness: 0.0
   iter: 5
@@ -43,6 +45,6 @@ simulation:
 
 log:
   print_log: on
-  export_gantt: off
-  output_directory: ../data/
-  gantt_directory: ./gantt
+  export_gantt: on
+  output_directory: /home/dcg/LLMSimulator/build/log
+  gantt_directory: /home/dcg/LLMSimulator/build/gantt

@@ -92,7 +92,7 @@ void Scheduler::pushDummySeq(int input_len, int output_len) {
   sequence_queue.push_back(new_seq);
 }
 
-void Scheduler::pushSeq(int num_seq) {
+void Scheduler::pushSeq(int num_seq, int graph_id) {
   if (!real_data) {
     assertTrue(model_config.input_len < model_config.max_seq_len, "Invalid input_len (= " 
                + std::to_string(model_config.input_len) + ")" );
@@ -101,7 +101,12 @@ void Scheduler::pushSeq(int num_seq) {
       std::cout << "output_len is modfied to " << model_config.output_len << std::endl;
     }
     for(int i = 0; i < num_seq; i ++){
-      pushDummySeq(model_config.input_len, model_config.output_len);
+      if(!model_config.graph){
+        pushDummySeq(model_config.input_len, model_config.output_len);
+      }
+      else{
+        pushDummySeq(graph_list[graph_id].token_count[i],1);
+      }
     }
   } else {
     pushRealSeq(num_seq);
@@ -245,19 +250,29 @@ BatchedSequence::Ptr Scheduler::getMetadata(int dp_rank) {
 }
 
 BatchedSequence::Ptr Scheduler::getMaxMetadata(int num_expert, int top_k,
-                                               Ptr scheduler) {
+                                               Ptr scheduler, int graph_id) {
   BatchedSequence::Ptr sequences_metadata =
       BatchedSequence::Create(num_expert, top_k, scheduler);
-  int seq_len = num_max_batched_token / batch_size_per_dp;
-  for (int seq_idx = 0; seq_idx < batch_size_per_dp; seq_idx++) {
-    Sequence::Ptr seq = Sequence::Create(seq_len, seq_len);
-    seq->num_process_token = seq_len;
-    sequences_metadata->add(seq);
+  if(model_config.graph){
+    sequences_metadata->graph = graph_list[graph_id];
+    for (int seq_idx = 0; seq_idx < sequences_metadata->graph.num_nodes; seq_idx++) {
+      Sequence::Ptr seq = Sequence::Create(sequences_metadata->graph.token_count[seq_idx], 1);
+      seq->num_process_token = sequences_metadata->graph.token_count[seq_idx];
+      sequences_metadata->add(seq);
+    }
+  }
+  else{
+    int seq_len = num_max_batched_token / batch_size_per_dp;
+    for (int seq_idx = 0; seq_idx < batch_size_per_dp; seq_idx++) {
+      Sequence::Ptr seq = Sequence::Create(seq_len, seq_len);
+      seq->num_process_token = seq_len;
+      sequences_metadata->add(seq);
+    }
   }
   return sequences_metadata;
 }
 
-std::vector<BatchedSequence::Ptr> Scheduler::setMetadata() {
+std::vector<BatchedSequence::Ptr> Scheduler::setMetadata(int graph_id) {
   bool process_gen = true;
   bool process_sum = true;
 
@@ -303,6 +318,9 @@ std::vector<BatchedSequence::Ptr> Scheduler::setMetadata() {
                                         sum_seq[seq_idx]->current_len);
         }
       }
+    }
+    if(model_config.graph){
+      batch->graph = graph_list[graph_id];
     }
   }
   return running_queue;
@@ -450,7 +468,7 @@ int Scheduler::getGenSize() {
     return num_token;
   };
 
-  void Scheduler::fillSequenceQueue(time_ns iter_time, time_ns total_time) {
+  void Scheduler::fillSequenceQueue(time_ns iter_time, time_ns total_time, int graph_id) {
     // add reqeust
     static int iter = 0;
     int num_request_to_inject = 0;
@@ -469,9 +487,14 @@ int Scheduler::getGenSize() {
         num_request_to_inject = std::max(num_request_to_inject, 0);
       }
     } else {
-      num_request_to_inject = total_batch_size - getBatchSize();
+      if(!model_config.graph){
+        num_request_to_inject = total_batch_size - getBatchSize();
+      }
+      else{
+        num_request_to_inject = graph_list[graph_id].num_nodes;
+      }
     }
-    pushSeq(num_request_to_inject);
+    pushSeq(num_request_to_inject, graph_id);
   }
 
   void Scheduler::hittingQueue(int iter) {

@@ -176,4 +176,20 @@ ExecStatus AbsorbMLASumExecutionPIM(Device_Ptr device,
                                     BatchedSequence::Ptr sequences_metadata,
                                     LayerInfo layer_info, bool use_ramulator);
 
+
+ExecStatus GNNExecutionGPU(Device_Ptr device,
+                                      std::vector<Tensor_Ptr> tensor_list,
+                                      BatchedSequence::Ptr sequences_metadata,
+                                      LayerInfo layer_info, bool use_ramulator);
+
+ExecStatus GNNExecutionLogic(Device_Ptr device,
+                                      std::vector<Tensor_Ptr> tensor_list,
+                                      BatchedSequence::Ptr sequences_metadata,
+                                      LayerInfo layer_info, bool use_ramulator);
+
+ExecStatus GNNExecutionPIM(Device_Ptr device,
+                                      std::vector<Tensor_Ptr> tensor_list,
+                                      BatchedSequence::Ptr sequences_metadata,
+                                      LayerInfo layer_info, bool use_ramulator);                                      
+
 }  // namespace llm_system

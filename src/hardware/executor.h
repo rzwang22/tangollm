@@ -54,6 +54,9 @@ class Executor {
   std::vector<std::function<ExecStatus(Device_Ptr, std::vector<Tensor_Ptr>,
                                        BatchedSequence::Ptr, LayerInfo, bool)>>
       absorb_mla_sum_function_ramulator_ptr;
+  std::vector<std::function<ExecStatus(Device_Ptr, std::vector<Tensor_Ptr>,
+                                       BatchedSequence::Ptr, LayerInfo, bool)>>
+      gnn_function_ramulator_ptr;
 
   void execution(LayerType layer_type,
                  const std::vector<Tensor_Ptr>& tensor_list,
@@ -76,6 +79,7 @@ class Executor {
   void initMultiLatentAttentionMixed();
   void initAbsorbMLAGen();
   void initAbsorbMLASum();
+  void initGNN();
 
   ExecStatus executePType(LayerType layer_type,
                           const std::vector<Tensor_Ptr>& tensor_list,
@@ -138,7 +142,11 @@ class Executor {
                                  ProcessorType processor_type,
                                  const LayerInfo layer_info, bool use_ramulator,
                                  Device_Ptr device);
-                                 
+  ExecStatus executeGNN(const std::vector<Tensor_Ptr>& tensor_list,
+                                 const BatchedSequence::Ptr sequences_metadata,
+                                 ProcessorType processor_type,
+                                 const LayerInfo layer_info, bool use_ramulator,
+                                 Device_Ptr device);
 };
 
 };  // namespace llm_system
