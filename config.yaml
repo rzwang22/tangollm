@@ -44,7 +44,7 @@ simulation:
   mem_cap_limit: false # if memory usage exceed memory capacity, batchsize modifies
 
 log:
-  print_log: true
+  print_log: false
   export_gantt: false
   output_directory: ../data/
   gantt_directory: ./gantt
