@@ -29,7 +29,12 @@ near_bank_pe:
   softmax_group_cycles: 1
   scheduling_overhead_per_tile_cycles: 16
   h100_group_cycles: 1
-  h100_bytes_per_cycle: 4096
+  h100_cache_bytes_per_cycle: 4096
+  h100_int2_unpack_group_cycles: 1
+  h100_scale_dequant_group_cycles: 1
+  h100_layout_conversion_group_cycles: 1
+  h100_irregular_gather_penalty: 1.25
+  h100_small_batch_efficiency: 0.50
   clock_ns: 1.0
 
 tile:
@@ -37,22 +42,42 @@ tile:
   head_tile: 1
   memory_token_tiles: [1, 4, 8]
 
-workload:
-  mode: query_sampled_subgraph
-  num_queries: 16
-  hop: 2
-  fanout: 16
+workload_suite:
+  full_graph_nodes: 2708
+  full_graph_edges: 10556
+  num_queries_per_workload: 16
   high_degree_top_percent: 0.05
   seed: 777
+  workloads:
+    - name: smoke
+      sampled_nodes: 5
+      sampled_edges: 15
+      dst_skewed: false
+    - name: small
+      sampled_nodes: 16
+      sampled_edges: 64
+      dst_skewed: false
+    - name: medium
+      sampled_nodes: 64
+      sampled_edges: 512
+      dst_skewed: false
+    - name: large
+      sampled_nodes: 128
+      sampled_edges: 2048
+      dst_skewed: false
+    - name: skewed_high_degree
+      sampled_nodes: 128
+      sampled_edges: 2048
+      dst_skewed: true
 
-query_graph:
-  source: synthetic
-  num_nodes: 2708
-  num_edges: 10556
-  seed: 777
+placement_sweep:
+  - hash
+  - degree_balanced
+  - source_dst_locality
 
 baselines:
-  - h100_selective_kv
+  - h100_ideal_compute_only
+  - h100_realistic_cache_path
   - pim_selective_kv_no_local_combine
   - pim_selective_kv_local_combine
 

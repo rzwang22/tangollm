@@ -1,22 +1,23 @@
 # Analytical PIM Simulator
 
-This is the first architecture-level analytical simulator for the HBM3
+This target is an architecture-level analytical simulator for the HBM3
 near-bank PIM design. It is independent from Ramulator and does not model
-cycle-accurate DRAM timing.
+cycle-accurate DRAM timing or real tensor values.
 
-## Patch 1 Scope
+## Patch 2 Scope
 
-Patch 1 calibrates the skeleton model into a query-level stage model:
+Patch 2 adds a workload suite and local-combine diagnosis on top of the Patch 1
+calibrated stage model:
 
 - Fixed total memory tokens `M = 128`.
 - `memory_token_tile` is a tile size, not the total token count.
 - `num_token_tiles = ceil(M / memory_token_tile)`.
 - GNN score/value compute is independent of tile size.
-- Tile size affects scheduling overhead, q broadcast amortization, buffer
-  occupancy, and reducer active groups.
-- Query-level sampled subgraphs are used instead of full-graph execution.
-- Selective KV policy:
-  target node union target 1-hop neighbors union high-degree sampled nodes.
+- Tile size affects scheduling overhead, q broadcast, buffer occupancy, and
+  reducer active groups.
+- Query-level synthetic sampled subgraphs are used instead of full-graph
+  execution.
+- Placement policies are swept independently from workload size.
 - No Ramulator, no cycle-accurate DRAM, no real tensor values.
 
 ## Sanity Check
@@ -50,13 +51,71 @@ model:
   include_scale_metadata: false
 ```
 
+## Workload Suite
+
+The default synthetic query-level suite is:
+
+- `smoke`: approximately 5 sampled nodes and 15 sampled edges.
+- `small`: approximately 16 sampled nodes and 64 sampled edges.
+- `medium`: approximately 64 sampled nodes and 512 sampled edges.
+- `large`: approximately 128 sampled nodes and 2048 sampled edges.
+- `skewed_high_degree`: 128 sampled nodes and 2048 dst-skewed edges.
+
+Each workload emits `num_queries_per_workload` independent query samples. The
+selective KV policy is:
+
+```text
+target node union target 1-hop neighbors union high-degree sampled nodes
+```
+
+The CSV reports both `selected_kv_ratio_vs_sampled_nodes` and
+`selected_kv_ratio_vs_full_graph`.
+
+## Placement Sweep
+
+Patch 2 supports three placement policies:
+
+- `hash`: source-node hash placement.
+- `degree_balanced`: sampled nodes are assigned to the least-loaded bank by
+  descending degree.
+- `source_dst_locality`: edge execution is placed by destination-node hash to
+  improve local combine opportunities.
+
+The output includes bank and pseudo-channel imbalance, local-combine reduction,
+latency, and traffic for each placement.
+
 ## Baselines
 
-Patch 1 implements exactly three baselines:
+Patch 2 implements four baselines:
 
-- `h100_selective_kv`
+- `h100_ideal_compute_only`
+- `h100_realistic_cache_path`
 - `pim_selective_kv_no_local_combine`
 - `pim_selective_kv_local_combine`
+
+The realistic H100 path includes configurable INT2 K/V read, unpack,
+scale/dequant, layout conversion, irregular gather penalty, and small-batch
+efficiency penalty.
+
+## Local-Combine Diagnosis
+
+The per-query and aggregate CSV files include:
+
+- `edge_message_count_before_local_combine`
+- `bank_local_group_count_after_combine`
+- `pc_group_count_after_pc_reduce`
+- `local_combine_reduction_ratio`
+- `pc_reduction_ratio`
+- `avg_edges_per_bank_dst`
+- `p95_edges_per_bank_dst`
+- `max_edges_per_bank_dst`
+- `message_traffic_before_local_combine`
+- `message_traffic_after_local_combine`
+- `bank_imbalance`
+- `pseudo_channel_imbalance`
+
+These fields are intended to diagnose whether a placement creates enough
+same-bank and same-pseudo-channel destination reuse for local combine to help.
 
 ## Build
 
@@ -80,55 +139,14 @@ Outputs:
 ../data/analytical_pim_aggregate.csv
 ```
 
-## Query Graph Input
+With the default config, the aggregate CSV has:
 
-The default config uses a synthetic graph plus query sampled subgraphs. A
-schema graph can be supplied with:
-
-```yaml
-query_graph:
-  source: schema
-  num_nodes: 4
-  edge_list:
-    - [0, 1, 0]
-    - [2, 1, 1]
-  node_degree: [1, 2, 1, 0]
-  high_degree_nodes: [1]
-  node_to_bank: [0, 1, 2, 3]
-  edge_to_bank: [0, 2]
+```text
+5 workloads * 3 placements * 4 baselines * 3 tile sizes = 180 data rows
 ```
 
-If `edge_to_bank` is omitted, the source node bank is used. If only
-`edge_to_pseudo_channel` is provided, the first bank in that pseudo-channel is
-used.
+The per-query CSV has:
 
-## Workload Config
-
-```yaml
-workload:
-  mode: query_sampled_subgraph
-  num_queries: 16
-  hop: 2
-  fanout: 16
-  high_degree_top_percent: 0.05
-  seed: 777
+```text
+5 workloads * 16 queries * 3 placements * 4 baselines * 3 tile sizes = 2880 data rows
 ```
-
-## Aggregate CSV
-
-The aggregate CSV reports one row per baseline and tile size:
-
-- `mean_latency_ns`
-- `p50_latency_ns`
-- `p95_latency_ns`
-- `selected_kv_count`
-- `q_broadcast_bytes`
-- `score_traffic_bytes`
-- `p_return_traffic_bytes`
-- `message_reduce_traffic_bytes`
-- `local_combine_buffer_max_bytes`
-- `pc_reducer_buffer_max_bytes`
-- `active_banks`
-- `active_pseudo_channels`
-- `near_bank_pe_utilization`
-- `reducer_utilization`
