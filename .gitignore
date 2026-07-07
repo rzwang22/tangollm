@@ -1,0 +1,19 @@
+build/
+tmp/
+
+# Local run output
+*.log
+
+# CMake generated files, in case an out-of-source build is not used.
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# Compiled artifacts
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
