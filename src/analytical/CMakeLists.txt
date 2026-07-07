@@ -9,3 +9,8 @@ target_link_libraries(
     analytical_pim_model
     PUBLIC yaml-cpp
 )
+
+target_compile_features(
+    analytical_pim_model
+    PUBLIC cxx_std_17
+)
