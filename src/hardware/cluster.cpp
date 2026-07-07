@@ -422,8 +422,14 @@ void Cluster::exportToCSV(std::ofstream &csv, std::vector<Stat> &stat_list) {
 }
 
 std::vector<Stat> Cluster::runIteration(int iter, std::string file_name) {
+  std::filesystem::path csv_path(file_name);
+  if (csv_path.has_parent_path()) {
+    std::filesystem::create_directories(csv_path.parent_path());
+  }
+
   std::ofstream csv;
   csv.open(file_name);
+  assertTrue(csv.is_open(), "Cannot open output CSV file: " + file_name);
 
   csv << "iter_info,split,type,time,latency,queueing_delay,arrival_time,seq_queue_"
          "size,"
