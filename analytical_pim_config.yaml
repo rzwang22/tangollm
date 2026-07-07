@@ -1,0 +1,37 @@
+model:
+  num_heads: 1
+  head_dim: 128
+
+hbm3:
+  num_stacks: 1
+  channels_per_stack: 8
+  pseudo_channels_per_channel: 2
+  banks_per_pseudo_channel: 16
+  pe_per_bank: 1
+
+near_bank_pe:
+  q8k8_group_cycles: 1
+  p8v8_group_cycles: 1
+  q8k2_lut_group_cycles: 1
+  p8v2_lut_group_cycles: 1
+  vadd_group_cycles: 1
+  scale_group_cycles: 1
+  reducer_group_cycles: 1
+  softmax_group_cycles: 1
+  clock_ns: 1.0
+
+tile:
+  channel_group: 16
+  head_tile: 1
+  memory_token_tiles: [1, 4, 8]
+
+query_graph:
+  source: synthetic
+  num_nodes: 2708
+  num_edges: 10556
+  num_target_nodes: 32
+  num_high_degree_nodes: 64
+  seed: 777
+
+output:
+  csv: ../data/analytical_pim_tiles.csv
