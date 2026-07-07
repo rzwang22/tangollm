@@ -35,7 +35,7 @@ serving:
 simulation:
   data: synthesis
   input_len: 1024
-  output_len: 1
+  output_len: 10
   precision_byte: 1
   skewness: 0.0
   iter: 5
