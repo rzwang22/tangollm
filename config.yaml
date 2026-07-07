@@ -1,6 +1,6 @@
 model:
-  model_name: mixtral
-  graph: on
+  model_name: deepseekV3
+  graph: false
   graph_file: /home/dcg/GOFA/graphs.txt
 
 system:
@@ -8,25 +8,25 @@ system:
   nvlink_gen: 5
   infiniband_gen: 800
   num_node: 1
-  num_device: 1
-  processor_type: GPU+LOGIC
+  num_device: 8
+  processor_type: GPU
   distribution:
     expert_tensor_degree: 1
     none_expert_tensor_degree: 1
   optimization:
-    parallel_execution: off
-    hetero_subbatch: off
-    disagg_system: off
-    use_low_unit_moe_only: off
-    use_ramulator: off
-    compressed_kv: on
-    use_absorb: on
-    use_flash_mla: on
-    use_flash_attention: on
-    reuse_kv_cache: off
+    parallel_execution: false
+    hetero_subbatch: false
+    disagg_system: false
+    use_low_unit_moe_only: false
+    use_ramulator: false
+    compressed_kv: true
+    use_absorb: true
+    use_flash_mla: true
+    use_flash_attention: true
+    reuse_kv_cache: false
     kv_cache_reuse_rate: 0.0
-    prefill_mode: on
-    decode_mode: off
+    prefill_mode: false
+    decode_mode: true
 
 serving:
   max_batch_size: 32
@@ -40,11 +40,11 @@ simulation:
   skewness: 0.0
   iter: 5
   injection_rate: 0
-  exit_out_of_memory: off
-  mem_cap_limit: off # if memory usage exceed memory capacity, batchsize modifies
+  exit_out_of_memory: false
+  mem_cap_limit: false # if memory usage exceed memory capacity, batchsize modifies
 
 log:
-  print_log: on
-  export_gantt: on
-  output_directory: /home/dcg/LLMSimulator/build/log
-  gantt_directory: /home/dcg/LLMSimulator/build/gantt
+  print_log: true
+  export_gantt: false
+  output_directory: ../data/
+  gantt_directory: ./gantt

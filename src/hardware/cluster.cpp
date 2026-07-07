@@ -473,7 +473,13 @@ std::vector<Stat> Cluster::runIterationMixed(int iter, std::ofstream &csv) {
       exportToCSV(csv, stat_list);
     }
 
-    std::vector<BatchedSequence::Ptr> metadata = scheduler->setMetadata(i%scheduler->graph_list.size());
+    int graph_id = 0;
+    if (scheduler->model_config.graph) {
+      assertTrue(!scheduler->graph_list.empty(),
+                 "Graph mode requires a non-empty graph list");
+      graph_id = i % scheduler->graph_list.size();
+    }
+    std::vector<BatchedSequence::Ptr> metadata = scheduler->setMetadata(graph_id);
     scheduler->printStatus();
     run(metadata);
     time_ns time = get_device(0)->status.device_time;
