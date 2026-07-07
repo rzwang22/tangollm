@@ -540,7 +540,9 @@ std::vector<Stat> Cluster::runIterationMixed(int iter, std::ofstream &csv) {
     scheduler->fillRunningQueue();
   }
 
-  return stat_list;
+  std::vector<Stat> remaining_stat_list = stat_list;
+  exportToCSV(csv, stat_list);
+  return remaining_stat_list;
 }
 
 std::vector<Stat> Cluster::runIterationSumGenSplit(int iter,
@@ -622,7 +624,9 @@ std::vector<Stat> Cluster::runIterationSumGenSplit(int iter,
     }
   }
 
-  return stat_list;
+  std::vector<Stat> remaining_stat_list = stat_list;
+  exportToCSV(csv, stat_list);
+  return remaining_stat_list;
 }
 
 void Cluster::addLatency(std::vector<Stat> &stat_list,
