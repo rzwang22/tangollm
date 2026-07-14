@@ -70,10 +70,19 @@ workload_suite:
       sampled_edges: 2048
       dst_skewed: true
 
+hybrid_placement:
+  hot_dst_degree_threshold: 64
+  target_edges_per_bank: 32
+  max_banks_per_destination: 16
+  locality_weight: 0.25
+  bank_balance_weight: 1.0
+  pseudo_channel_balance_weight: 1.0
+
 placement_sweep:
   - hash
   - degree_balanced
   - source_dst_locality
+  - hybrid_locality_balanced
 
 baselines:
   - h100_ideal_compute_only

@@ -4,10 +4,10 @@ This target is an architecture-level analytical simulator for the HBM3
 near-bank PIM design. It is independent from Ramulator and does not model
 cycle-accurate DRAM timing or real tensor values.
 
-## Patch 2 Scope
+## Patch 3 Scope
 
-Patch 2 adds a workload suite and local-combine diagnosis on top of the Patch 1
-calibrated stage model:
+Patch 3 adds hybrid placement and detailed bottleneck attribution on top of the
+Patch 2 workload suite:
 
 - Fixed total memory tokens `M = 128`.
 - `memory_token_tile` is a tile size, not the total token count.
@@ -18,6 +18,10 @@ calibrated stage model:
 - Query-level synthetic sampled subgraphs are used instead of full-graph
   execution.
 - Placement policies are swept independently from workload size.
+- Hybrid placement shards only hot destinations and balances both bank and
+  pseudo-channel pressure.
+- Primitive-level PIM and H100 cache-path cycles are reported separately.
+- Every query reports its dominant modeled bottleneck and bottleneck fraction.
 - No Ramulator, no cycle-accurate DRAM, no real tensor values.
 
 ## Sanity Check
@@ -73,13 +77,35 @@ The CSV reports both `selected_kv_ratio_vs_sampled_nodes` and
 
 ## Placement Sweep
 
-Patch 2 supports three placement policies:
+Patch 3 supports four placement policies:
 
 - `hash`: source-node hash placement.
 - `degree_balanced`: sampled nodes are assigned to the least-loaded bank by
   descending degree.
 - `source_dst_locality`: edge execution is placed by destination-node hash to
   improve local combine opportunities.
+- `hybrid_locality_balanced`: ordinary destinations retain single-bank
+  locality, while hot destinations are split across a bounded number of banks.
+  A greedy score balances bank pressure, pseudo-channel pressure, and distance
+  from the destination's hash anchor.
+
+Hybrid placement is configurable:
+
+```yaml
+hybrid_placement:
+  hot_dst_degree_threshold: 64
+  target_edges_per_bank: 32
+  max_banks_per_destination: 16
+  locality_weight: 0.25
+  bank_balance_weight: 1.0
+  pseudo_channel_balance_weight: 1.0
+```
+
+The number of shards for a hot destination is:
+
+```text
+min(max_banks_per_destination, ceil(in_degree / target_edges_per_bank))
+```
 
 The output includes bank and pseudo-channel imbalance, local-combine reduction,
 latency, and traffic for each placement.
@@ -117,6 +143,35 @@ The per-query and aggregate CSV files include:
 These fields are intended to diagnose whether a placement creates enough
 same-bank and same-pseudo-channel destination reuse for local combine to help.
 
+## Bottleneck Breakdown
+
+The existing stage totals are retained:
+
+- `gnn_score_cycles`
+- `gnn_message_cycles`
+- `cached_kv_cycles`
+- `reducer_cycles`
+- `scheduling_cycles`
+
+PIM rows additionally split these totals into Q8xK8 VDOT, score scale, P8xV8
+VMUL, value scale, local VADD, Q8xK2 LUT, P8xV2 LUT, cached-KV scale,
+pseudo-channel reduce, and global reduce cycles. The three PE stages also report
+the bank that determines their latency.
+
+The realistic H100 rows split the cache path into native INT2 cache read,
+unpack, scale/dequant, layout conversion, irregular-gather penalty, and
+small-batch penalty cycles.
+
+Each per-query row includes:
+
+- `bottleneck_stage`
+- `bottleneck_cycles`
+- `bottleneck_fraction`
+
+The aggregate CSV reports the mean of every cycle component plus the dominant
+bottleneck stage, the fraction of queries for which it dominates, and mean
+bottleneck contribution.
+
 ## Build
 
 ```bash
@@ -142,11 +197,11 @@ Outputs:
 With the default config, the aggregate CSV has:
 
 ```text
-5 workloads * 3 placements * 4 baselines * 3 tile sizes = 180 data rows
+5 workloads * 4 placements * 4 baselines * 3 tile sizes = 240 data rows
 ```
 
 The per-query CSV has:
 
 ```text
-5 workloads * 16 queries * 3 placements * 4 baselines * 3 tile sizes = 2880 data rows
+5 workloads * 16 queries * 4 placements * 4 baselines * 3 tile sizes = 3840 data rows
 ```

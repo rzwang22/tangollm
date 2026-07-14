@@ -9,12 +9,14 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <numeric>
 #include <set>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace llm_system {
@@ -30,6 +32,7 @@ constexpr const char* kPIMLocalCombine = "pim_selective_kv_local_combine";
 constexpr const char* kPlacementHash = "hash";
 constexpr const char* kPlacementDegreeBalanced = "degree_balanced";
 constexpr const char* kPlacementSourceDstLocality = "source_dst_locality";
+constexpr const char* kPlacementHybrid = "hybrid_locality_balanced";
 
 struct TopologyConfig {
   int num_stacks = 1;
@@ -117,6 +120,15 @@ struct WorkloadSuiteConfig {
   std::vector<WorkloadCase> workloads;
 };
 
+struct HybridPlacementConfig {
+  int hot_dst_degree_threshold = 64;
+  int target_edges_per_bank = 32;
+  int max_banks_per_destination = 16;
+  double locality_weight = 0.25;
+  double bank_balance_weight = 1.0;
+  double pseudo_channel_balance_weight = 1.0;
+};
+
 struct OutputConfig {
   std::string per_query_csv = "../data/analytical_pim_per_query.csv";
   std::string aggregate_csv = "../data/analytical_pim_aggregate.csv";
@@ -149,9 +161,11 @@ struct SimulationConfig {
   TileConfig tile;
   ModelConfig model;
   WorkloadSuiteConfig suite;
+  HybridPlacementConfig hybrid;
   OutputConfig output;
   std::vector<std::string> placements{kPlacementHash, kPlacementDegreeBalanced,
-                                      kPlacementSourceDstLocality};
+                                      kPlacementSourceDstLocality,
+                                      kPlacementHybrid};
   std::vector<std::string> baselines{kH100Ideal, kH100Realistic,
                                      kPIMNoLocalCombine, kPIMLocalCombine};
 };
@@ -196,12 +210,34 @@ struct QueryResult {
   double cached_kv_cycles = 0.0;
   double reducer_cycles = 0.0;
   double scheduling_cycles = 0.0;
+  double q8k8_vdot_cycles = 0.0;
+  double gnn_score_scale_cycles = 0.0;
+  double p8v8_vmul_cycles = 0.0;
+  double gnn_value_scale_cycles = 0.0;
+  double local_vadd_cycles = 0.0;
+  double q8k2_lut_cycles = 0.0;
+  double p8v2_lut_cycles = 0.0;
+  double cached_kv_scale_cycles = 0.0;
+  double pc_reduce_cycles = 0.0;
+  double global_reduce_cycles = 0.0;
+  double h100_cache_read_cycles = 0.0;
+  double h100_int2_unpack_cycles = 0.0;
+  double h100_scale_dequant_cycles = 0.0;
+  double h100_layout_conversion_cycles = 0.0;
+  double h100_irregular_gather_penalty_cycles = 0.0;
+  double h100_small_batch_penalty_cycles = 0.0;
+  std::string bottleneck_stage = "none";
+  double bottleneck_cycles = 0.0;
+  double bottleneck_fraction = 0.0;
   double total_cycles = 0.0;
   double latency_ns = 0.0;
   double near_bank_pe_utilization = 0.0;
   double reducer_utilization = 0.0;
   int active_banks = 0;
   int active_pseudo_channels = 0;
+  int score_bottleneck_bank = -1;
+  int message_bottleneck_bank = -1;
+  int cached_kv_bottleneck_bank = -1;
   Diagnosis diagnosis;
 };
 
@@ -410,6 +446,20 @@ SimulationConfig LoadConfig(const std::string& config_path) {
     config.suite.workloads = DefaultWorkloads();
   }
 
+  const YAML::Node hybrid = root["hybrid_placement"];
+  config.hybrid.hot_dst_degree_threshold =
+      ReadScalar<int>(hybrid, "hot_dst_degree_threshold", 64);
+  config.hybrid.target_edges_per_bank =
+      ReadScalar<int>(hybrid, "target_edges_per_bank", 32);
+  config.hybrid.max_banks_per_destination =
+      ReadScalar<int>(hybrid, "max_banks_per_destination", 16);
+  config.hybrid.locality_weight =
+      ReadScalar<double>(hybrid, "locality_weight", 0.25);
+  config.hybrid.bank_balance_weight =
+      ReadScalar<double>(hybrid, "bank_balance_weight", 1.0);
+  config.hybrid.pseudo_channel_balance_weight = ReadScalar<double>(
+      hybrid, "pseudo_channel_balance_weight", 1.0);
+
   const auto placements = ReadStringVector(root["placement_sweep"]);
   if (!placements.empty()) {
     config.placements = placements;
@@ -428,7 +478,13 @@ SimulationConfig LoadConfig(const std::string& config_path) {
   if (config.model.memory_tokens <= 0 || config.model.gnn_heads <= 0 ||
       config.model.head_dim <= 0 || config.tile.channel_group <= 0 ||
       config.suite.full_graph_nodes <= 0 ||
-      config.suite.num_queries_per_workload <= 0) {
+      config.suite.num_queries_per_workload <= 0 ||
+      config.hybrid.hot_dst_degree_threshold <= 0 ||
+      config.hybrid.target_edges_per_bank <= 0 ||
+      config.hybrid.max_banks_per_destination <= 0 ||
+      config.hybrid.locality_weight < 0.0 ||
+      config.hybrid.bank_balance_weight < 0.0 ||
+      config.hybrid.pseudo_channel_balance_weight < 0.0) {
     throw std::runtime_error("Invalid analytical PIM config");
   }
   return config;
@@ -455,6 +511,17 @@ void PrintSanityCheck(const SimulationConfig& config) {
             << ScaleMetadataBytesPerItem(config.model)
             << ", total_kv_bytes_per_item="
             << TextKVBytesPerItem(config.model) << "\n";
+  std::cout << "hybrid_placement: hot_dst_degree_threshold="
+            << config.hybrid.hot_dst_degree_threshold
+            << ", target_edges_per_bank="
+            << config.hybrid.target_edges_per_bank
+            << ", max_banks_per_destination="
+            << config.hybrid.max_banks_per_destination
+            << ", locality_weight=" << std::setprecision(2)
+            << config.hybrid.locality_weight
+            << ", bank_balance_weight=" << config.hybrid.bank_balance_weight
+            << ", pseudo_channel_balance_weight="
+            << config.hybrid.pseudo_channel_balance_weight << "\n";
 }
 
 void AddUniqueNode(std::vector<int>& nodes, std::vector<bool>& mask, int node) {
@@ -582,11 +649,106 @@ std::map<int, int> BuildDegreeBalancedNodePlacement(
   return node_to_bank;
 }
 
+void ApplyHybridPlacement(QuerySample& query,
+                          const SimulationConfig& config) {
+  const int total_banks = config.topology.total_banks();
+  const int total_pcs = config.topology.total_pseudo_channels();
+  const int banks_per_pc = config.topology.banks_per_pseudo_channel;
+  std::map<int, std::vector<size_t>> edges_by_dst;
+  for (size_t edge_idx = 0; edge_idx < query.edges.size(); ++edge_idx) {
+    edges_by_dst[query.edges[edge_idx].dst].push_back(edge_idx);
+  }
+
+  std::vector<int> destinations;
+  destinations.reserve(edges_by_dst.size());
+  for (const auto& item : edges_by_dst) {
+    destinations.push_back(item.first);
+  }
+  std::sort(destinations.begin(), destinations.end(), [&](int lhs, int rhs) {
+    const size_t lhs_edges = edges_by_dst.at(lhs).size();
+    const size_t rhs_edges = edges_by_dst.at(rhs).size();
+    return lhs_edges == rhs_edges ? lhs < rhs : lhs_edges > rhs_edges;
+  });
+
+  std::vector<int> bank_load(total_banks, 0);
+  std::vector<int> pc_load(total_pcs, 0);
+  for (int dst : destinations) {
+    const auto& edge_indices = edges_by_dst.at(dst);
+    const int dst_edges = static_cast<int>(edge_indices.size());
+    int shard_count = 1;
+    if (dst_edges >= config.hybrid.hot_dst_degree_threshold) {
+      shard_count = CeilDiv(dst_edges, config.hybrid.target_edges_per_bank);
+    }
+    shard_count = std::max(
+        1, std::min({shard_count, config.hybrid.max_banks_per_destination,
+                     total_banks, dst_edges}));
+
+    const int anchor_bank = NodeBankHash(dst, config);
+    const int anchor_pc = config.topology.bank_to_pseudo_channel(anchor_bank);
+    std::vector<int> shard_banks;
+    shard_banks.reserve(shard_count);
+    std::set<int> selected_banks;
+    for (int shard = 0; shard < shard_count; ++shard) {
+      const int shard_edges =
+          dst_edges / shard_count + (shard < dst_edges % shard_count ? 1 : 0);
+      int best_bank = -1;
+      double best_score = std::numeric_limits<double>::infinity();
+      int best_distance = total_banks;
+      for (int bank = 0; bank < total_banks; ++bank) {
+        if (selected_banks.count(bank) != 0) {
+          continue;
+        }
+        const int pc = config.topology.bank_to_pseudo_channel(bank);
+        const double bank_pressure =
+            1.0 * (bank_load[bank] + shard_edges) /
+            config.hybrid.target_edges_per_bank;
+        const double pc_pressure =
+            1.0 * (pc_load[pc] + shard_edges) /
+            (config.hybrid.target_edges_per_bank * banks_per_pc);
+        const double locality_penalty =
+            bank == anchor_bank ? 0.0 : (pc == anchor_pc ? 0.5 : 1.0);
+        const double score =
+            config.hybrid.bank_balance_weight * bank_pressure +
+            config.hybrid.pseudo_channel_balance_weight * pc_pressure +
+            config.hybrid.locality_weight * locality_penalty;
+        const int distance = PositiveModulo(bank - anchor_bank, total_banks);
+        if (score < best_score - 1e-12 ||
+            (std::abs(score - best_score) <= 1e-12 &&
+             distance < best_distance)) {
+          best_bank = bank;
+          best_score = score;
+          best_distance = distance;
+        }
+      }
+      selected_banks.insert(best_bank);
+      shard_banks.push_back(best_bank);
+      bank_load[best_bank] += shard_edges;
+      pc_load[config.topology.bank_to_pseudo_channel(best_bank)] += shard_edges;
+    }
+
+    size_t edge_offset = 0;
+    for (int shard = 0; shard < shard_count; ++shard) {
+      const int shard_edges =
+          dst_edges / shard_count + (shard < dst_edges % shard_count ? 1 : 0);
+      const int bank = shard_banks[shard];
+      for (int idx = 0; idx < shard_edges; ++idx) {
+        Edge& edge = query.edges[edge_indices[edge_offset++]];
+        edge.bank = bank;
+        edge.pseudo_channel = config.topology.bank_to_pseudo_channel(bank);
+      }
+    }
+  }
+}
+
 QuerySample ApplyPlacement(const QuerySample& input,
                            const SimulationConfig& config,
                            const std::string& placement) {
   QuerySample query = input;
   const auto degree_balanced = BuildDegreeBalancedNodePlacement(query, config);
+  if (placement == kPlacementHybrid) {
+    ApplyHybridPlacement(query, config);
+    return query;
+  }
   for (auto& edge : query.edges) {
     if (placement == kPlacementHash) {
       edge.bank = NodeBankHash(edge.src, config);
@@ -700,6 +862,21 @@ Diagnosis DiagnoseLocalCombine(const QuerySample& query,
   return d;
 }
 
+void SetBottleneck(
+    QueryResult& result,
+    const std::vector<std::pair<std::string, double>>& stage_cycles) {
+  for (const auto& stage : stage_cycles) {
+    if (stage.second > result.bottleneck_cycles) {
+      result.bottleneck_stage = stage.first;
+      result.bottleneck_cycles = stage.second;
+    }
+  }
+  result.bottleneck_fraction =
+      result.total_cycles == 0.0
+          ? 0.0
+          : result.bottleneck_cycles / result.total_cycles;
+}
+
 QueryResult SimulateQuery(const SimulationConfig& config,
                           const QuerySample& query,
                           const std::string& placement,
@@ -768,21 +945,45 @@ QueryResult SimulateQuery(const SimulationConfig& config,
                    result.cached_kv_cycles;
     if (baseline == kH100Realistic) {
       const double efficiency =
-          std::max(0.01, config.pe.h100_small_batch_efficiency);
-      const double cache_read_cycles =
+          std::min(1.0, std::max(0.01, config.pe.h100_small_batch_efficiency));
+      result.h100_cache_read_cycles =
           result.selected_kv_bytes /
-          std::max(1.0, config.pe.h100_cache_bytes_per_cycle) / efficiency *
-          config.pe.h100_irregular_gather_penalty;
-      const double unpack_cycles =
+          std::max(1.0, config.pe.h100_cache_bytes_per_cycle);
+      result.h100_irregular_gather_penalty_cycles =
+          result.h100_cache_read_cycles *
+          std::max(0.0, config.pe.h100_irregular_gather_penalty - 1.0);
+      result.h100_small_batch_penalty_cycles =
+          (result.h100_cache_read_cycles +
+           result.h100_irregular_gather_penalty_cycles) *
+          (1.0 / efficiency - 1.0);
+      result.h100_int2_unpack_cycles =
           cached_kv_groups * config.pe.h100_int2_unpack_group_cycles;
-      const double scale_cycles =
+      result.h100_scale_dequant_cycles =
           cached_kv_groups * config.pe.h100_scale_dequant_group_cycles;
-      const double layout_cycles =
+      result.h100_layout_conversion_cycles =
           cached_kv_groups * config.pe.h100_layout_conversion_group_cycles;
-      total += cache_read_cycles + unpack_cycles + scale_cycles + layout_cycles;
+      total += result.h100_cache_read_cycles +
+               result.h100_irregular_gather_penalty_cycles +
+               result.h100_small_batch_penalty_cycles +
+               result.h100_int2_unpack_cycles +
+               result.h100_scale_dequant_cycles +
+               result.h100_layout_conversion_cycles;
     }
     result.total_cycles = total;
     result.latency_ns = total * config.pe.clock_ns;
+    SetBottleneck(
+        result,
+        {{"h100_gnn_score_compute", result.gnn_score_cycles},
+         {"h100_gnn_value_compute", result.gnn_message_cycles},
+         {"h100_cached_kv_compute", result.cached_kv_cycles},
+         {"h100_cache_read", result.h100_cache_read_cycles},
+         {"h100_int2_unpack", result.h100_int2_unpack_cycles},
+         {"h100_scale_dequant", result.h100_scale_dequant_cycles},
+         {"h100_layout_conversion", result.h100_layout_conversion_cycles},
+         {"h100_irregular_gather_penalty",
+          result.h100_irregular_gather_penalty_cycles},
+         {"h100_small_batch_penalty",
+          result.h100_small_batch_penalty_cycles}});
     return result;
   }
 
@@ -820,9 +1021,60 @@ QueryResult SimulateQuery(const SimulationConfig& config,
         (config.pe.q8k2_lut_group_cycles + config.pe.p8v2_lut_group_cycles +
          2.0 * config.pe.scale_group_cycles) /
         config.topology.pe_per_bank;
+    const double bank_q8k8_vdot_cycles =
+        bank_score_groups * config.pe.q8k8_group_cycles /
+        config.topology.pe_per_bank;
+    const double bank_score_scale_cycles =
+        bank_score_groups * config.pe.scale_group_cycles /
+        config.topology.pe_per_bank;
+    const double bank_p8v8_vmul_cycles =
+        bank_message_groups * config.pe.p8v8_group_cycles /
+        config.topology.pe_per_bank;
+    const double bank_message_scale_cycles =
+        bank_message_groups * config.pe.scale_group_cycles /
+        config.topology.pe_per_bank;
+    const double bank_local_vadd_cycles =
+        baseline == kPIMLocalCombine
+            ? bank_message_groups * config.pe.vadd_group_cycles /
+                  config.topology.pe_per_bank
+            : 0.0;
+    const double bank_q8k2_lut_cycles =
+        bank_kv_groups * config.pe.q8k2_lut_group_cycles /
+        config.topology.pe_per_bank;
+    const double bank_p8v2_lut_cycles =
+        bank_kv_groups * config.pe.p8v2_lut_group_cycles /
+        config.topology.pe_per_bank;
+    const double bank_kv_scale_cycles =
+        bank_kv_groups * 2.0 * config.pe.scale_group_cycles /
+        config.topology.pe_per_bank;
+    if (bank_score_cycles > score_cycles) {
+      result.score_bottleneck_bank = bank;
+    }
+    if (bank_message_cycles > message_cycles) {
+      result.message_bottleneck_bank = bank;
+    }
+    if (bank_kv_cycles > kv_cycles) {
+      result.cached_kv_bottleneck_bank = bank;
+    }
     score_cycles = std::max(score_cycles, bank_score_cycles);
     message_cycles = std::max(message_cycles, bank_message_cycles);
     kv_cycles = std::max(kv_cycles, bank_kv_cycles);
+    result.q8k8_vdot_cycles =
+        std::max(result.q8k8_vdot_cycles, bank_q8k8_vdot_cycles);
+    result.gnn_score_scale_cycles =
+        std::max(result.gnn_score_scale_cycles, bank_score_scale_cycles);
+    result.p8v8_vmul_cycles =
+        std::max(result.p8v8_vmul_cycles, bank_p8v8_vmul_cycles);
+    result.gnn_value_scale_cycles =
+        std::max(result.gnn_value_scale_cycles, bank_message_scale_cycles);
+    result.local_vadd_cycles =
+        std::max(result.local_vadd_cycles, bank_local_vadd_cycles);
+    result.q8k2_lut_cycles =
+        std::max(result.q8k2_lut_cycles, bank_q8k2_lut_cycles);
+    result.p8v2_lut_cycles =
+        std::max(result.p8v2_lut_cycles, bank_p8v2_lut_cycles);
+    result.cached_kv_scale_cycles =
+        std::max(result.cached_kv_scale_cycles, bank_kv_scale_cycles);
     pe_work_cycles += bank_score_cycles + bank_message_cycles + bank_kv_cycles;
   }
 
@@ -839,7 +1091,7 @@ QueryResult SimulateQuery(const SimulationConfig& config,
   if (baseline == kPIMNoLocalCombine) {
     result.message_reduce_traffic_bytes =
         result.diagnosis.message_traffic_before_local_combine;
-    result.reducer_cycles =
+    result.pc_reduce_cycles =
         result.diagnosis.edge_message_count_before_local_combine *
         config.pe.reducer_group_cycles / std::max<int>(1, active_pcs.size());
   } else if (baseline == kPIMLocalCombine) {
@@ -847,11 +1099,12 @@ QueryResult SimulateQuery(const SimulationConfig& config,
         (result.diagnosis.bank_local_group_count_after_combine +
          result.diagnosis.pc_group_count_after_pc_reduce) *
         config.tile.channel_group * config.precision.partial_msg_bytes;
-    result.reducer_cycles =
+    result.pc_reduce_cycles =
         result.diagnosis.bank_local_group_count_after_combine *
-            config.pe.reducer_group_cycles / std::max<int>(1, active_pcs.size()) +
+        config.pe.reducer_group_cycles / std::max<int>(1, active_pcs.size());
+    result.global_reduce_cycles =
         result.diagnosis.pc_group_count_after_pc_reduce *
-            config.pe.reducer_group_cycles;
+        config.pe.reducer_group_cycles;
   } else {
     throw std::runtime_error("Unknown baseline: " + baseline);
   }
@@ -859,6 +1112,8 @@ QueryResult SimulateQuery(const SimulationConfig& config,
   result.gnn_score_cycles = score_cycles;
   result.gnn_message_cycles = message_cycles;
   result.cached_kv_cycles = kv_cycles;
+  result.reducer_cycles =
+      result.pc_reduce_cycles + result.global_reduce_cycles;
   result.scheduling_cycles =
       num_token_tiles * config.pe.scheduling_overhead_per_tile_cycles;
   const double near_bank_cycles = score_cycles + message_cycles + kv_cycles;
@@ -879,6 +1134,19 @@ QueryResult SimulateQuery(const SimulationConfig& config,
                        result.diagnosis.pc_group_count_after_pc_reduce
                  : result.diagnosis.edge_message_count_before_local_combine) /
                 (result.reducer_cycles * std::max<int>(1, active_pcs.size() + 1));
+  SetBottleneck(
+      result,
+      {{"pim_q8k8_vdot", result.q8k8_vdot_cycles},
+       {"pim_gnn_score_scale", result.gnn_score_scale_cycles},
+       {"pim_p8v8_vmul", result.p8v8_vmul_cycles},
+       {"pim_gnn_value_scale", result.gnn_value_scale_cycles},
+       {"pim_local_vadd", result.local_vadd_cycles},
+       {"pim_q8k2_lut", result.q8k2_lut_cycles},
+       {"pim_p8v2_lut", result.p8v2_lut_cycles},
+       {"pim_cached_kv_scale", result.cached_kv_scale_cycles},
+       {"pim_pc_reduce", result.pc_reduce_cycles},
+       {"pim_global_reduce", result.global_reduce_cycles},
+       {"scheduling", result.scheduling_cycles}});
   return result;
 }
 
@@ -913,7 +1181,17 @@ void WritePerQueryCSV(const std::string& path,
          "avg_edges_per_bank_dst,p95_edges_per_bank_dst,max_edges_per_bank_dst,"
          "message_traffic_before_local_combine,"
          "message_traffic_after_local_combine,bank_imbalance,"
-         "pseudo_channel_imbalance\n";
+         "pseudo_channel_imbalance,q8k8_vdot_cycles,"
+         "gnn_score_scale_cycles,p8v8_vmul_cycles,"
+         "gnn_value_scale_cycles,local_vadd_cycles,q8k2_lut_cycles,"
+         "p8v2_lut_cycles,cached_kv_scale_cycles,pc_reduce_cycles,"
+         "global_reduce_cycles,h100_cache_read_cycles,"
+         "h100_int2_unpack_cycles,h100_scale_dequant_cycles,"
+         "h100_layout_conversion_cycles,"
+         "h100_irregular_gather_penalty_cycles,"
+         "h100_small_batch_penalty_cycles,bottleneck_stage,"
+         "bottleneck_cycles,bottleneck_fraction,score_bottleneck_bank,"
+         "message_bottleneck_bank,cached_kv_bottleneck_bank\n";
   csv << std::fixed << std::setprecision(6);
   for (const auto& r : results) {
     const Diagnosis& d = r.diagnosis;
@@ -940,8 +1218,47 @@ void WritePerQueryCSV(const std::string& path,
         << d.p95_edges_per_bank_dst << "," << d.max_edges_per_bank_dst << ","
         << d.message_traffic_before_local_combine << ","
         << d.message_traffic_after_local_combine << "," << d.bank_imbalance
-        << "," << d.pseudo_channel_imbalance << "\n";
+        << "," << d.pseudo_channel_imbalance << "," << r.q8k8_vdot_cycles
+        << "," << r.gnn_score_scale_cycles << "," << r.p8v8_vmul_cycles
+        << "," << r.gnn_value_scale_cycles << "," << r.local_vadd_cycles
+        << "," << r.q8k2_lut_cycles << "," << r.p8v2_lut_cycles << ","
+        << r.cached_kv_scale_cycles << "," << r.pc_reduce_cycles << ","
+        << r.global_reduce_cycles << "," << r.h100_cache_read_cycles << ","
+        << r.h100_int2_unpack_cycles << ","
+        << r.h100_scale_dequant_cycles << ","
+        << r.h100_layout_conversion_cycles << ","
+        << r.h100_irregular_gather_penalty_cycles << ","
+        << r.h100_small_batch_penalty_cycles << "," << r.bottleneck_stage
+        << "," << r.bottleneck_cycles << "," << r.bottleneck_fraction << ","
+        << r.score_bottleneck_bank << "," << r.message_bottleneck_bank << ","
+        << r.cached_kv_bottleneck_bank << "\n";
   }
+}
+
+double MeanResultField(const std::vector<const QueryResult*>& group,
+                       double QueryResult::*field) {
+  std::vector<double> values;
+  values.reserve(group.size());
+  for (const auto* result : group) {
+    values.push_back(result->*field);
+  }
+  return Mean(values);
+}
+
+std::pair<std::string, double> DominantBottleneck(
+    const std::vector<const QueryResult*>& group) {
+  std::map<std::string, int> counts;
+  for (const auto* result : group) {
+    counts[result->bottleneck_stage]++;
+  }
+  std::pair<std::string, int> dominant{"none", 0};
+  for (const auto& item : counts) {
+    if (item.second > dominant.second) {
+      dominant = item;
+    }
+  }
+  return {dominant.first,
+          group.empty() ? 0.0 : 1.0 * dominant.second / group.size()};
 }
 
 void WriteAggregateCSV(const std::string& path,
@@ -961,7 +1278,21 @@ void WriteAggregateCSV(const std::string& path,
          "pseudo_channel_imbalance,local_combine_reduction_ratio,"
          "pc_reduction_ratio,avg_edges_per_bank_dst,p95_edges_per_bank_dst,"
          "max_edges_per_bank_dst,message_traffic_before_local_combine,"
-         "message_traffic_after_local_combine\n";
+         "message_traffic_after_local_combine,mean_gnn_score_cycles,"
+         "mean_gnn_message_cycles,mean_cached_kv_cycles,"
+         "mean_reducer_cycles,mean_scheduling_cycles,"
+         "mean_q8k8_vdot_cycles,mean_gnn_score_scale_cycles,"
+         "mean_p8v8_vmul_cycles,mean_gnn_value_scale_cycles,"
+         "mean_local_vadd_cycles,mean_q8k2_lut_cycles,"
+         "mean_p8v2_lut_cycles,mean_cached_kv_scale_cycles,"
+         "mean_pc_reduce_cycles,mean_global_reduce_cycles,"
+         "mean_h100_cache_read_cycles,mean_h100_int2_unpack_cycles,"
+         "mean_h100_scale_dequant_cycles,"
+         "mean_h100_layout_conversion_cycles,"
+         "mean_h100_irregular_gather_penalty_cycles,"
+         "mean_h100_small_batch_penalty_cycles,dominant_bottleneck_stage,"
+         "bottleneck_stage_query_fraction,mean_bottleneck_cycles,"
+         "mean_bottleneck_fraction\n";
   csv << std::fixed << std::setprecision(6);
   for (const auto& workload : config.suite.workloads) {
     for (const auto& placement : config.placements) {
@@ -1024,6 +1355,7 @@ void WriteAggregateCSV(const std::string& path,
             traffic_after.push_back(
                 r->diagnosis.message_traffic_after_local_combine);
           }
+          const auto dominant_bottleneck = DominantBottleneck(group);
           csv << workload.name << "," << placement << "," << baseline << ","
               << tile << "," << group.size() << "," << Mean(latency) << ","
               << Percentile(latency, 0.50) << ","
@@ -1037,7 +1369,48 @@ void WriteAggregateCSV(const std::string& path,
               << Mean(local_reduction) << "," << Mean(pc_reduction) << ","
               << Mean(avg_edges) << "," << Mean(p95_edges) << ","
               << Mean(max_edges) << "," << Mean(traffic_before) << ","
-              << Mean(traffic_after) << "\n";
+              << Mean(traffic_after) << ","
+              << MeanResultField(group, &QueryResult::gnn_score_cycles) << ","
+              << MeanResultField(group, &QueryResult::gnn_message_cycles)
+              << ","
+              << MeanResultField(group, &QueryResult::cached_kv_cycles) << ","
+              << MeanResultField(group, &QueryResult::reducer_cycles) << ","
+              << MeanResultField(group, &QueryResult::scheduling_cycles) << ","
+              << MeanResultField(group, &QueryResult::q8k8_vdot_cycles) << ","
+              << MeanResultField(group, &QueryResult::gnn_score_scale_cycles)
+              << ","
+              << MeanResultField(group, &QueryResult::p8v8_vmul_cycles) << ","
+              << MeanResultField(group, &QueryResult::gnn_value_scale_cycles)
+              << ","
+              << MeanResultField(group, &QueryResult::local_vadd_cycles) << ","
+              << MeanResultField(group, &QueryResult::q8k2_lut_cycles) << ","
+              << MeanResultField(group, &QueryResult::p8v2_lut_cycles) << ","
+              << MeanResultField(group, &QueryResult::cached_kv_scale_cycles)
+              << ","
+              << MeanResultField(group, &QueryResult::pc_reduce_cycles) << ","
+              << MeanResultField(group, &QueryResult::global_reduce_cycles)
+              << ","
+              << MeanResultField(group, &QueryResult::h100_cache_read_cycles)
+              << ","
+              << MeanResultField(group, &QueryResult::h100_int2_unpack_cycles)
+              << ","
+              << MeanResultField(group,
+                                 &QueryResult::h100_scale_dequant_cycles)
+              << ","
+              << MeanResultField(
+                     group, &QueryResult::h100_layout_conversion_cycles)
+              << ","
+              << MeanResultField(
+                     group,
+                     &QueryResult::h100_irregular_gather_penalty_cycles)
+              << ","
+              << MeanResultField(
+                     group, &QueryResult::h100_small_batch_penalty_cycles)
+              << "," << dominant_bottleneck.first << ","
+              << dominant_bottleneck.second << ","
+              << MeanResultField(group, &QueryResult::bottleneck_cycles) << ","
+              << MeanResultField(group, &QueryResult::bottleneck_fraction)
+              << "\n";
         }
       }
     }
@@ -1046,7 +1419,7 @@ void WriteAggregateCSV(const std::string& path,
 
 void PrintSummary(const SimulationConfig& config,
                   const std::vector<QueryResult>& results) {
-  std::cout << "Analytical PIM Patch 2 workload-suite run\n";
+  std::cout << "Analytical PIM Patch 3 hybrid-placement run\n";
   std::cout << "workloads=" << config.suite.workloads.size()
             << ", placements=" << config.placements.size()
             << ", baselines=" << config.baselines.size()
@@ -1056,12 +1429,14 @@ void PrintSummary(const SimulationConfig& config,
     for (const auto& placement : config.placements) {
       std::vector<double> local_reduction;
       std::vector<double> latency;
+      std::vector<const QueryResult*> group;
       for (const auto& r : results) {
         if (r.workload == workload.name && r.placement == placement &&
             r.baseline == kPIMLocalCombine && r.memory_token_tile == 4) {
           local_reduction.push_back(
               r.diagnosis.local_combine_reduction_ratio);
           latency.push_back(r.latency_ns);
+          group.push_back(&r);
         }
       }
       if (!latency.empty()) {
@@ -1069,7 +1444,8 @@ void PrintSummary(const SimulationConfig& config,
                   << " local-combine T=4 mean_latency_ns=" << std::fixed
                   << std::setprecision(2) << Mean(latency)
                   << " mean_local_reduction=" << std::setprecision(4)
-                  << Mean(local_reduction) << "\n";
+                  << Mean(local_reduction)
+                  << " bottleneck=" << DominantBottleneck(group).first << "\n";
       }
     }
   }
