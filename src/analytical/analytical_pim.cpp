@@ -12,7 +12,9 @@
 #include <limits>
 #include <map>
 #include <numeric>
+#include <random>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -108,7 +110,9 @@ struct WorkloadCase {
   std::string name;
   int sampled_nodes = 5;
   int sampled_edges = 15;
-  bool dst_skewed = false;
+  std::string degree_distribution = "uniform";
+  double power_law_exponent = 1.2;
+  double destination_skew = 0.0;
 };
 
 struct WorkloadSuiteConfig {
@@ -117,6 +121,7 @@ struct WorkloadSuiteConfig {
   int num_queries_per_workload = 16;
   double high_degree_top_percent = 0.05;
   int seed = 777;
+  bool allow_duplicate_edges = false;
   std::vector<WorkloadCase> workloads;
 };
 
@@ -152,6 +157,48 @@ struct QuerySample {
   std::vector<bool> selected_kv_mask;
   std::vector<int> node_degree;
   std::vector<bool> high_degree_mask;
+};
+
+struct GraphSanity {
+  double duplicate_edge_count = 0.0;
+  double duplicate_edge_ratio = 0.0;
+  double unique_src_dst_count = 0.0;
+  double in_degree_mean = 0.0;
+  double in_degree_p50 = 0.0;
+  double in_degree_p95 = 0.0;
+  double in_degree_max = 0.0;
+  double out_degree_mean = 0.0;
+  double out_degree_p50 = 0.0;
+  double out_degree_p95 = 0.0;
+  double out_degree_max = 0.0;
+  double dst_degree_hist_1 = 0.0;
+  double dst_degree_hist_2_3 = 0.0;
+  double dst_degree_hist_4_7 = 0.0;
+  double dst_degree_hist_8_15 = 0.0;
+  double dst_degree_hist_16_31 = 0.0;
+  double dst_degree_hist_32_63 = 0.0;
+  double dst_degree_hist_64_plus = 0.0;
+  double unique_source_banks = 0.0;
+};
+
+struct PlacementValidation {
+  double mapping_difference_ratio_vs_hash = 0.0;
+  double edge_active_banks = 0.0;
+  double edge_active_pseudo_channels = 0.0;
+  double bank_edge_count_mean = 0.0;
+  double bank_edge_count_p50 = 0.0;
+  double bank_edge_count_p95 = 0.0;
+  double bank_edge_count_max = 0.0;
+  double pc_edge_count_mean = 0.0;
+  double pc_edge_count_p50 = 0.0;
+  double pc_edge_count_p95 = 0.0;
+  double pc_edge_count_max = 0.0;
+  double sharded_destination_count = 0.0;
+  double total_destination_shards = 0.0;
+  double average_shards_per_destination = 0.0;
+  double max_shards_per_destination = 0.0;
+  std::string active_bank_histogram;
+  std::string active_pc_histogram;
 };
 
 struct SimulationConfig {
@@ -238,6 +285,8 @@ struct QueryResult {
   int score_bottleneck_bank = -1;
   int message_bottleneck_bank = -1;
   int cached_kv_bottleneck_bank = -1;
+  GraphSanity graph_sanity;
+  PlacementValidation placement_validation;
   Diagnosis diagnosis;
 };
 
@@ -341,11 +390,11 @@ double TextKVBytesPerItem(const ModelConfig& model) {
 }
 
 std::vector<WorkloadCase> DefaultWorkloads() {
-  return {{"smoke", 5, 15, false},
-          {"small", 16, 64, false},
-          {"medium", 64, 512, false},
-          {"large", 128, 2048, false},
-          {"skewed_high_degree", 128, 2048, true}};
+  return {{"smoke", 5, 15, "uniform", 1.2, 0.0},
+          {"small", 16, 64, "uniform", 1.2, 0.0},
+          {"medium", 64, 512, "uniform", 1.2, 0.0},
+          {"large", 128, 2048, "uniform", 1.2, 0.0},
+          {"skewed_high_degree", 128, 2048, "power_law", 1.2, 1.5}};
 }
 
 SimulationConfig LoadConfig(const std::string& config_path) {
@@ -431,6 +480,8 @@ SimulationConfig LoadConfig(const std::string& config_path) {
   config.suite.high_degree_top_percent =
       ReadScalar<double>(suite, "high_degree_top_percent", 0.05);
   config.suite.seed = ReadScalar<int>(suite, "seed", 777);
+  config.suite.allow_duplicate_edges =
+      ReadScalar<bool>(suite, "allow_duplicate_edges", false);
   const YAML::Node workloads = suite["workloads"];
   if (workloads && workloads.IsSequence()) {
     for (const auto& item : workloads) {
@@ -438,7 +489,12 @@ SimulationConfig LoadConfig(const std::string& config_path) {
       workload.name = ReadScalar<std::string>(item, "name", "workload");
       workload.sampled_nodes = ReadScalar<int>(item, "sampled_nodes", 16);
       workload.sampled_edges = ReadScalar<int>(item, "sampled_edges", 64);
-      workload.dst_skewed = ReadScalar<bool>(item, "dst_skewed", false);
+      workload.degree_distribution =
+          ReadScalar<std::string>(item, "degree_distribution", "uniform");
+      workload.power_law_exponent =
+          ReadScalar<double>(item, "power_law_exponent", 1.2);
+      workload.destination_skew =
+          ReadScalar<double>(item, "destination_skew", 0.0);
       config.suite.workloads.push_back(workload);
     }
   }
@@ -487,6 +543,16 @@ SimulationConfig LoadConfig(const std::string& config_path) {
       config.hybrid.pseudo_channel_balance_weight < 0.0) {
     throw std::runtime_error("Invalid analytical PIM config");
   }
+  for (const auto& workload : config.suite.workloads) {
+    if ((workload.degree_distribution != "uniform" &&
+         workload.degree_distribution != "power_law") ||
+        workload.sampled_nodes < 2 || workload.sampled_edges < 0 ||
+        workload.power_law_exponent < 0.0 ||
+        workload.destination_skew < 0.0) {
+      throw std::runtime_error("Invalid workload suite config: " +
+                               workload.name);
+    }
+  }
   return config;
 }
 
@@ -531,6 +597,21 @@ void AddUniqueNode(std::vector<int>& nodes, std::vector<bool>& mask, int node) {
   }
 }
 
+uint32_t StableStringHash(const std::string& value) {
+  uint32_t hash = 2166136261u;
+  for (unsigned char ch : value) {
+    hash = (hash ^ ch) * 16777619u;
+  }
+  return hash;
+}
+
+struct WeightedEdgeCandidate {
+  int src_idx = 0;
+  int dst_idx = 0;
+  double weight = 1.0;
+  double key = 0.0;
+};
+
 QuerySample GenerateQuery(const SimulationConfig& config,
                           const WorkloadCase& workload, int query_id) {
   QuerySample query;
@@ -544,36 +625,105 @@ QuerySample GenerateQuery(const SimulationConfig& config,
       std::max(2, std::min(workload.sampled_nodes, config.suite.full_graph_nodes));
   const int sampled_edges = std::max(0, workload.sampled_edges);
 
+  const uint32_t query_seed =
+      static_cast<uint32_t>(config.suite.seed) ^ StableStringHash(workload.name) ^
+      (0x9e3779b9u * static_cast<uint32_t>(query_id + 1));
+  std::mt19937 rng(query_seed);
+
   std::vector<bool> node_mask(config.suite.full_graph_nodes, false);
   AddUniqueNode(query.sampled_nodes, node_mask, query.target_node);
+  std::uniform_int_distribution<int> node_distribution(
+      0, config.suite.full_graph_nodes - 1);
   for (int idx = 1; idx < sampled_nodes; ++idx) {
-    int node = DeterministicHash(query_id * 1009 + idx * 9176,
-                                 config.suite.seed + 31,
-                                 config.suite.full_graph_nodes);
+    int node = node_distribution(rng);
     while (node_mask[node]) {
-      node = (node + 1) % config.suite.full_graph_nodes;
+      node = node_distribution(rng);
     }
     AddUniqueNode(query.sampled_nodes, node_mask, node);
   }
 
   const int local_nodes = static_cast<int>(query.sampled_nodes.size());
+  const int max_unique_edges = local_nodes * (local_nodes - 1);
+  if (!config.suite.allow_duplicate_edges &&
+      sampled_edges > max_unique_edges) {
+    throw std::runtime_error("Workload " + workload.name + " requests " +
+                             std::to_string(sampled_edges) +
+                             " unique edges, but only " +
+                             std::to_string(max_unique_edges) +
+                             " directed non-self edges are possible");
+  }
+
+  std::vector<int> source_order(local_nodes);
+  std::vector<int> destination_order(local_nodes);
+  std::iota(source_order.begin(), source_order.end(), 0);
+  std::iota(destination_order.begin(), destination_order.end(), 0);
+  std::shuffle(source_order.begin(), source_order.end(), rng);
+  std::shuffle(destination_order.begin(), destination_order.end(), rng);
+  std::vector<int> source_rank(local_nodes, 0);
+  std::vector<int> destination_rank(local_nodes, 0);
+  for (int rank = 0; rank < local_nodes; ++rank) {
+    source_rank[source_order[rank]] = rank + 1;
+    destination_rank[destination_order[rank]] = rank + 1;
+  }
+
+  std::uniform_real_distribution<double> uniform(0.0, 1.0);
+  std::vector<WeightedEdgeCandidate> candidates;
+  candidates.reserve(max_unique_edges);
+  for (int src_idx = 0; src_idx < local_nodes; ++src_idx) {
+    for (int dst_idx = 0; dst_idx < local_nodes; ++dst_idx) {
+      if (src_idx == dst_idx) {
+        continue;
+      }
+      double weight = 1.0;
+      if (workload.degree_distribution == "power_law") {
+        weight *= std::pow(source_rank[src_idx],
+                           -workload.power_law_exponent);
+        weight *= std::pow(destination_rank[dst_idx],
+                           -workload.power_law_exponent);
+      }
+      if (workload.destination_skew > 0.0) {
+        weight *=
+            std::pow(destination_rank[dst_idx], -workload.destination_skew);
+      }
+      const double sample = std::max(uniform(rng), 1e-15);
+      candidates.push_back(
+          {src_idx, dst_idx, weight, -std::log(sample) / weight});
+    }
+  }
+
+  std::vector<WeightedEdgeCandidate> selected_edges;
+  selected_edges.reserve(sampled_edges);
+  if (config.suite.allow_duplicate_edges) {
+    std::vector<double> weights;
+    weights.reserve(candidates.size());
+    for (const auto& candidate : candidates) {
+      weights.push_back(candidate.weight);
+    }
+    std::discrete_distribution<size_t> edge_distribution(weights.begin(),
+                                                         weights.end());
+    for (int edge_id = 0; edge_id < sampled_edges; ++edge_id) {
+      selected_edges.push_back(candidates[edge_distribution(rng)]);
+    }
+  } else {
+    if (sampled_edges < static_cast<int>(candidates.size())) {
+      std::nth_element(candidates.begin(), candidates.begin() + sampled_edges,
+                       candidates.end(), [](const auto& lhs, const auto& rhs) {
+                         return lhs.key < rhs.key;
+                       });
+    }
+    candidates.resize(sampled_edges);
+    std::sort(candidates.begin(), candidates.end(),
+              [](const auto& lhs, const auto& rhs) {
+                return lhs.key < rhs.key;
+              });
+    selected_edges = std::move(candidates);
+  }
+
   query.node_degree.assign(config.suite.full_graph_nodes, 0);
   query.edges.reserve(sampled_edges);
   for (int edge_id = 0; edge_id < sampled_edges; ++edge_id) {
-    const int src_idx =
-        DeterministicHash(edge_id * 19 + query_id, config.suite.seed, local_nodes);
-    int dst_idx = 0;
-    if (workload.dst_skewed) {
-      const int hot_set = std::max(1, local_nodes / 16);
-      dst_idx = DeterministicHash(edge_id * 7 + query_id,
-                                  config.suite.seed + 17, hot_set);
-    } else {
-      dst_idx = DeterministicHash(edge_id * 29 + query_id,
-                                  config.suite.seed + 71, local_nodes);
-    }
-    if (dst_idx == src_idx) {
-      dst_idx = (dst_idx + 1) % local_nodes;
-    }
+    const int src_idx = selected_edges[edge_id].src_idx;
+    const int dst_idx = selected_edges[edge_id].dst_idx;
     Edge edge;
     edge.src = query.sampled_nodes[src_idx];
     edge.dst = query.sampled_nodes[dst_idx];
@@ -626,6 +776,152 @@ std::vector<QuerySample> GenerateQueries(const SimulationConfig& config) {
 
 int NodeBankHash(int node, const SimulationConfig& config) {
   return DeterministicHash(node, config.suite.seed, config.topology.total_banks());
+}
+
+GraphSanity DiagnoseGraph(const QuerySample& query,
+                          const SimulationConfig& config) {
+  GraphSanity sanity;
+  std::set<std::pair<int, int>> unique_edges;
+  std::vector<int> in_degree(query.full_graph_nodes, 0);
+  std::vector<int> out_degree(query.full_graph_nodes, 0);
+  std::set<int> source_banks;
+  for (const auto& edge : query.edges) {
+    unique_edges.insert({edge.src, edge.dst});
+    in_degree[edge.dst]++;
+    out_degree[edge.src]++;
+    source_banks.insert(NodeBankHash(edge.src, config));
+  }
+
+  sanity.unique_src_dst_count = unique_edges.size();
+  sanity.duplicate_edge_count =
+      query.edges.size() - static_cast<double>(unique_edges.size());
+  sanity.duplicate_edge_ratio =
+      query.edges.empty() ? 0.0
+                          : sanity.duplicate_edge_count / query.edges.size();
+  sanity.unique_source_banks = source_banks.size();
+
+  std::vector<double> in_values;
+  std::vector<double> out_values;
+  in_values.reserve(query.sampled_nodes.size());
+  out_values.reserve(query.sampled_nodes.size());
+  for (int node : query.sampled_nodes) {
+    in_values.push_back(in_degree[node]);
+    out_values.push_back(out_degree[node]);
+    const int degree = in_degree[node];
+    if (degree == 1) {
+      sanity.dst_degree_hist_1++;
+    } else if (degree <= 3 && degree > 1) {
+      sanity.dst_degree_hist_2_3++;
+    } else if (degree <= 7 && degree > 3) {
+      sanity.dst_degree_hist_4_7++;
+    } else if (degree <= 15 && degree > 7) {
+      sanity.dst_degree_hist_8_15++;
+    } else if (degree <= 31 && degree > 15) {
+      sanity.dst_degree_hist_16_31++;
+    } else if (degree <= 63 && degree > 31) {
+      sanity.dst_degree_hist_32_63++;
+    } else if (degree >= 64) {
+      sanity.dst_degree_hist_64_plus++;
+    }
+  }
+  sanity.in_degree_mean = Mean(in_values);
+  sanity.in_degree_p50 = Percentile(in_values, 0.50);
+  sanity.in_degree_p95 = Percentile(in_values, 0.95);
+  sanity.in_degree_max =
+      in_values.empty() ? 0.0
+                        : *std::max_element(in_values.begin(), in_values.end());
+  sanity.out_degree_mean = Mean(out_values);
+  sanity.out_degree_p50 = Percentile(out_values, 0.50);
+  sanity.out_degree_p95 = Percentile(out_values, 0.95);
+  sanity.out_degree_max =
+      out_values.empty()
+          ? 0.0
+          : *std::max_element(out_values.begin(), out_values.end());
+  return sanity;
+}
+
+std::string FormatActiveHistogram(const std::vector<int>& counts) {
+  std::ostringstream histogram;
+  bool first = true;
+  for (size_t index = 0; index < counts.size(); ++index) {
+    if (counts[index] == 0) {
+      continue;
+    }
+    if (!first) {
+      histogram << "|";
+    }
+    first = false;
+    histogram << index << ":" << counts[index];
+  }
+  return histogram.str();
+}
+
+PlacementValidation ValidatePlacement(const QuerySample& query,
+                                      const SimulationConfig& config) {
+  PlacementValidation validation;
+  std::vector<int> bank_counts(config.topology.total_banks(), 0);
+  std::vector<int> pc_counts(config.topology.total_pseudo_channels(), 0);
+  std::map<int, std::set<int>> destination_banks;
+  int changed_from_hash = 0;
+  for (const auto& edge : query.edges) {
+    bank_counts[edge.bank]++;
+    pc_counts[edge.pseudo_channel]++;
+    destination_banks[edge.dst].insert(edge.bank);
+    if (edge.bank != NodeBankHash(edge.src, config)) {
+      changed_from_hash++;
+    }
+  }
+  validation.mapping_difference_ratio_vs_hash =
+      query.edges.empty() ? 0.0 : 1.0 * changed_from_hash / query.edges.size();
+  validation.active_bank_histogram = FormatActiveHistogram(bank_counts);
+  validation.active_pc_histogram = FormatActiveHistogram(pc_counts);
+
+  std::vector<double> active_bank_counts;
+  std::vector<double> active_pc_counts;
+  for (int count : bank_counts) {
+    if (count > 0) {
+      active_bank_counts.push_back(count);
+    }
+  }
+  for (int count : pc_counts) {
+    if (count > 0) {
+      active_pc_counts.push_back(count);
+    }
+  }
+  validation.edge_active_banks = active_bank_counts.size();
+  validation.edge_active_pseudo_channels = active_pc_counts.size();
+  validation.bank_edge_count_mean = Mean(active_bank_counts);
+  validation.bank_edge_count_p50 = Percentile(active_bank_counts, 0.50);
+  validation.bank_edge_count_p95 = Percentile(active_bank_counts, 0.95);
+  validation.bank_edge_count_max =
+      active_bank_counts.empty()
+          ? 0.0
+          : *std::max_element(active_bank_counts.begin(),
+                              active_bank_counts.end());
+  validation.pc_edge_count_mean = Mean(active_pc_counts);
+  validation.pc_edge_count_p50 = Percentile(active_pc_counts, 0.50);
+  validation.pc_edge_count_p95 = Percentile(active_pc_counts, 0.95);
+  validation.pc_edge_count_max =
+      active_pc_counts.empty()
+          ? 0.0
+          : *std::max_element(active_pc_counts.begin(), active_pc_counts.end());
+
+  std::vector<double> shards_per_destination;
+  for (const auto& item : destination_banks) {
+    const double shards = item.second.size();
+    shards_per_destination.push_back(shards);
+    validation.total_destination_shards += shards;
+    if (shards > 1.0) {
+      validation.sharded_destination_count++;
+    }
+  }
+  validation.average_shards_per_destination = Mean(shards_per_destination);
+  validation.max_shards_per_destination =
+      shards_per_destination.empty()
+          ? 0.0
+          : *std::max_element(shards_per_destination.begin(),
+                              shards_per_destination.end());
+  return validation;
 }
 
 std::map<int, int> BuildDegreeBalancedNodePlacement(
@@ -935,6 +1231,8 @@ QueryResult SimulateQuery(const SimulationConfig& config,
       selected_kv_count * TextKVBytesPerItem(config.model);
   result.active_banks = static_cast<int>(active_banks.size());
   result.active_pseudo_channels = static_cast<int>(active_pcs.size());
+  result.graph_sanity = DiagnoseGraph(query, config);
+  result.placement_validation = ValidatePlacement(query, config);
   result.diagnosis = DiagnoseLocalCombine(query, config);
 
   if (baseline == kH100Ideal || baseline == kH100Realistic) {
@@ -1088,26 +1386,25 @@ QueryResult SimulateQuery(const SimulationConfig& config,
       result.diagnosis.pc_group_count_after_pc_reduce /
       std::max(1, config.model.memory_tokens) * buffer_per_active_group;
 
+  double pc_input_groups = 0.0;
   if (baseline == kPIMNoLocalCombine) {
-    result.message_reduce_traffic_bytes =
-        result.diagnosis.message_traffic_before_local_combine;
-    result.pc_reduce_cycles =
-        result.diagnosis.edge_message_count_before_local_combine *
-        config.pe.reducer_group_cycles / std::max<int>(1, active_pcs.size());
+    pc_input_groups =
+        result.diagnosis.edge_message_count_before_local_combine;
   } else if (baseline == kPIMLocalCombine) {
-    result.message_reduce_traffic_bytes =
-        (result.diagnosis.bank_local_group_count_after_combine +
-         result.diagnosis.pc_group_count_after_pc_reduce) *
-        config.tile.channel_group * config.precision.partial_msg_bytes;
-    result.pc_reduce_cycles =
-        result.diagnosis.bank_local_group_count_after_combine *
-        config.pe.reducer_group_cycles / std::max<int>(1, active_pcs.size());
-    result.global_reduce_cycles =
-        result.diagnosis.pc_group_count_after_pc_reduce *
-        config.pe.reducer_group_cycles;
+    pc_input_groups = result.diagnosis.bank_local_group_count_after_combine;
   } else {
     throw std::runtime_error("Unknown baseline: " + baseline);
   }
+  const double pc_output_groups =
+      result.diagnosis.pc_group_count_after_pc_reduce;
+  result.message_reduce_traffic_bytes =
+      (pc_input_groups + pc_output_groups) * config.tile.channel_group *
+      config.precision.partial_msg_bytes;
+  result.pc_reduce_cycles =
+      pc_input_groups * config.pe.reducer_group_cycles /
+      std::max<int>(1, active_pcs.size());
+  result.global_reduce_cycles =
+      pc_output_groups * config.pe.reducer_group_cycles;
 
   result.gnn_score_cycles = score_cycles;
   result.gnn_message_cycles = message_cycles;
@@ -1129,10 +1426,7 @@ QueryResult SimulateQuery(const SimulationConfig& config,
   result.reducer_utilization =
       result.reducer_cycles == 0.0
           ? 0.0
-          : (baseline == kPIMLocalCombine
-                 ? result.diagnosis.bank_local_group_count_after_combine +
-                       result.diagnosis.pc_group_count_after_pc_reduce
-                 : result.diagnosis.edge_message_count_before_local_combine) /
+          : (pc_input_groups + pc_output_groups) /
                 (result.reducer_cycles * std::max<int>(1, active_pcs.size() + 1));
   SetBottleneck(
       result,
@@ -1191,10 +1485,26 @@ void WritePerQueryCSV(const std::string& path,
          "h100_irregular_gather_penalty_cycles,"
          "h100_small_batch_penalty_cycles,bottleneck_stage,"
          "bottleneck_cycles,bottleneck_fraction,score_bottleneck_bank,"
-         "message_bottleneck_bank,cached_kv_bottleneck_bank\n";
+         "message_bottleneck_bank,cached_kv_bottleneck_bank,"
+         "duplicate_edge_count,duplicate_edge_ratio,unique_src_dst_count,"
+         "in_degree_mean,in_degree_p50,in_degree_p95,in_degree_max,"
+         "out_degree_mean,out_degree_p50,out_degree_p95,out_degree_max,"
+         "dst_degree_hist_1,dst_degree_hist_2_3,dst_degree_hist_4_7,"
+         "dst_degree_hist_8_15,dst_degree_hist_16_31,"
+         "dst_degree_hist_32_63,dst_degree_hist_64_plus,"
+         "unique_source_banks,mapping_difference_ratio_vs_hash,"
+         "edge_active_banks,edge_active_pseudo_channels,"
+         "bank_edge_count_mean,bank_edge_count_p50,bank_edge_count_p95,"
+         "bank_edge_count_max,pc_edge_count_mean,pc_edge_count_p50,"
+         "pc_edge_count_p95,pc_edge_count_max,sharded_destination_count,"
+         "total_destination_shards,average_shards_per_destination,"
+         "max_shards_per_destination,active_bank_histogram,"
+         "active_pc_histogram\n";
   csv << std::fixed << std::setprecision(6);
   for (const auto& r : results) {
     const Diagnosis& d = r.diagnosis;
+    const GraphSanity& g = r.graph_sanity;
+    const PlacementValidation& p = r.placement_validation;
     csv << r.workload << "," << r.placement << "," << r.baseline << ","
         << r.query_id << "," << r.target_node << "," << r.memory_token_tile
         << "," << r.num_token_tiles << "," << r.sampled_node_count << ","
@@ -1231,7 +1541,26 @@ void WritePerQueryCSV(const std::string& path,
         << r.h100_small_batch_penalty_cycles << "," << r.bottleneck_stage
         << "," << r.bottleneck_cycles << "," << r.bottleneck_fraction << ","
         << r.score_bottleneck_bank << "," << r.message_bottleneck_bank << ","
-        << r.cached_kv_bottleneck_bank << "\n";
+        << r.cached_kv_bottleneck_bank << "," << g.duplicate_edge_count << ","
+        << g.duplicate_edge_ratio << "," << g.unique_src_dst_count << ","
+        << g.in_degree_mean << "," << g.in_degree_p50 << ","
+        << g.in_degree_p95 << "," << g.in_degree_max << ","
+        << g.out_degree_mean << "," << g.out_degree_p50 << ","
+        << g.out_degree_p95 << "," << g.out_degree_max << ","
+        << g.dst_degree_hist_1 << "," << g.dst_degree_hist_2_3 << ","
+        << g.dst_degree_hist_4_7 << "," << g.dst_degree_hist_8_15 << ","
+        << g.dst_degree_hist_16_31 << "," << g.dst_degree_hist_32_63 << ","
+        << g.dst_degree_hist_64_plus << "," << g.unique_source_banks << ","
+        << p.mapping_difference_ratio_vs_hash << "," << p.edge_active_banks
+        << "," << p.edge_active_pseudo_channels << ","
+        << p.bank_edge_count_mean << "," << p.bank_edge_count_p50 << ","
+        << p.bank_edge_count_p95 << "," << p.bank_edge_count_max << ","
+        << p.pc_edge_count_mean << "," << p.pc_edge_count_p50 << ","
+        << p.pc_edge_count_p95 << "," << p.pc_edge_count_max << ","
+        << p.sharded_destination_count << "," << p.total_destination_shards
+        << "," << p.average_shards_per_destination << ","
+        << p.max_shards_per_destination << "," << p.active_bank_histogram
+        << "," << p.active_pc_histogram << "\n";
   }
 }
 
@@ -1243,6 +1572,33 @@ double MeanResultField(const std::vector<const QueryResult*>& group,
     values.push_back(result->*field);
   }
   return Mean(values);
+}
+
+template <typename Getter>
+double MeanResultValue(const std::vector<const QueryResult*>& group,
+                       Getter getter) {
+  std::vector<double> values;
+  values.reserve(group.size());
+  for (const auto* result : group) {
+    values.push_back(getter(*result));
+  }
+  return Mean(values);
+}
+
+double MeanGraphField(const std::vector<const QueryResult*>& group,
+                      double GraphSanity::*field) {
+  return MeanResultValue(group,
+                         [field](const QueryResult& result) {
+                           return result.graph_sanity.*field;
+                         });
+}
+
+double MeanPlacementField(const std::vector<const QueryResult*>& group,
+                          double PlacementValidation::*field) {
+  return MeanResultValue(group,
+                         [field](const QueryResult& result) {
+                           return result.placement_validation.*field;
+                         });
 }
 
 std::pair<std::string, double> DominantBottleneck(
@@ -1292,7 +1648,20 @@ void WriteAggregateCSV(const std::string& path,
          "mean_h100_irregular_gather_penalty_cycles,"
          "mean_h100_small_batch_penalty_cycles,dominant_bottleneck_stage,"
          "bottleneck_stage_query_fraction,mean_bottleneck_cycles,"
-         "mean_bottleneck_fraction\n";
+         "mean_bottleneck_fraction,duplicate_edge_count,"
+         "duplicate_edge_ratio,unique_src_dst_count,in_degree_mean,"
+         "in_degree_p50,in_degree_p95,in_degree_max,out_degree_mean,"
+         "out_degree_p50,out_degree_p95,out_degree_max,dst_degree_hist_1,"
+         "dst_degree_hist_2_3,dst_degree_hist_4_7,dst_degree_hist_8_15,"
+         "dst_degree_hist_16_31,dst_degree_hist_32_63,"
+         "dst_degree_hist_64_plus,unique_source_banks,"
+         "mapping_difference_ratio_vs_hash,edge_active_banks,"
+         "edge_active_pseudo_channels,bank_edge_count_mean,"
+         "bank_edge_count_p50,bank_edge_count_p95,bank_edge_count_max,"
+         "pc_edge_count_mean,pc_edge_count_p50,pc_edge_count_p95,"
+         "pc_edge_count_max,sharded_destination_count,"
+         "total_destination_shards,average_shards_per_destination,"
+         "max_shards_per_destination\n";
   csv << std::fixed << std::setprecision(6);
   for (const auto& workload : config.suite.workloads) {
     for (const auto& placement : config.placements) {
@@ -1410,6 +1779,82 @@ void WriteAggregateCSV(const std::string& path,
               << dominant_bottleneck.second << ","
               << MeanResultField(group, &QueryResult::bottleneck_cycles) << ","
               << MeanResultField(group, &QueryResult::bottleneck_fraction)
+              << ","
+              << MeanGraphField(group, &GraphSanity::duplicate_edge_count)
+              << ","
+              << MeanGraphField(group, &GraphSanity::duplicate_edge_ratio)
+              << ","
+              << MeanGraphField(group, &GraphSanity::unique_src_dst_count)
+              << "," << MeanGraphField(group, &GraphSanity::in_degree_mean)
+              << "," << MeanGraphField(group, &GraphSanity::in_degree_p50)
+              << "," << MeanGraphField(group, &GraphSanity::in_degree_p95)
+              << "," << MeanGraphField(group, &GraphSanity::in_degree_max)
+              << "," << MeanGraphField(group, &GraphSanity::out_degree_mean)
+              << "," << MeanGraphField(group, &GraphSanity::out_degree_p50)
+              << "," << MeanGraphField(group, &GraphSanity::out_degree_p95)
+              << "," << MeanGraphField(group, &GraphSanity::out_degree_max)
+              << "," << MeanGraphField(group, &GraphSanity::dst_degree_hist_1)
+              << ","
+              << MeanGraphField(group, &GraphSanity::dst_degree_hist_2_3)
+              << ","
+              << MeanGraphField(group, &GraphSanity::dst_degree_hist_4_7)
+              << ","
+              << MeanGraphField(group, &GraphSanity::dst_degree_hist_8_15)
+              << ","
+              << MeanGraphField(group, &GraphSanity::dst_degree_hist_16_31)
+              << ","
+              << MeanGraphField(group, &GraphSanity::dst_degree_hist_32_63)
+              << ","
+              << MeanGraphField(group, &GraphSanity::dst_degree_hist_64_plus)
+              << ","
+              << MeanGraphField(group, &GraphSanity::unique_source_banks)
+              << ","
+              << MeanPlacementField(
+                     group,
+                     &PlacementValidation::mapping_difference_ratio_vs_hash)
+              << ","
+              << MeanPlacementField(group,
+                                    &PlacementValidation::edge_active_banks)
+              << ","
+              << MeanPlacementField(
+                     group, &PlacementValidation::edge_active_pseudo_channels)
+              << ","
+              << MeanPlacementField(group,
+                                    &PlacementValidation::bank_edge_count_mean)
+              << ","
+              << MeanPlacementField(group,
+                                    &PlacementValidation::bank_edge_count_p50)
+              << ","
+              << MeanPlacementField(group,
+                                    &PlacementValidation::bank_edge_count_p95)
+              << ","
+              << MeanPlacementField(group,
+                                    &PlacementValidation::bank_edge_count_max)
+              << ","
+              << MeanPlacementField(group,
+                                    &PlacementValidation::pc_edge_count_mean)
+              << ","
+              << MeanPlacementField(group,
+                                    &PlacementValidation::pc_edge_count_p50)
+              << ","
+              << MeanPlacementField(group,
+                                    &PlacementValidation::pc_edge_count_p95)
+              << ","
+              << MeanPlacementField(group,
+                                    &PlacementValidation::pc_edge_count_max)
+              << ","
+              << MeanPlacementField(
+                     group, &PlacementValidation::sharded_destination_count)
+              << ","
+              << MeanPlacementField(group,
+                                    &PlacementValidation::total_destination_shards)
+              << ","
+              << MeanPlacementField(
+                     group,
+                     &PlacementValidation::average_shards_per_destination)
+              << ","
+              << MeanPlacementField(
+                     group, &PlacementValidation::max_shards_per_destination)
               << "\n";
         }
       }

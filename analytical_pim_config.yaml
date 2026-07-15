@@ -48,27 +48,38 @@ workload_suite:
   num_queries_per_workload: 16
   high_degree_top_percent: 0.05
   seed: 777
+  allow_duplicate_edges: false
   workloads:
     - name: smoke
       sampled_nodes: 5
       sampled_edges: 15
-      dst_skewed: false
+      degree_distribution: uniform
+      power_law_exponent: 1.2
+      destination_skew: 0.0
     - name: small
       sampled_nodes: 16
       sampled_edges: 64
-      dst_skewed: false
+      degree_distribution: uniform
+      power_law_exponent: 1.2
+      destination_skew: 0.0
     - name: medium
       sampled_nodes: 64
       sampled_edges: 512
-      dst_skewed: false
+      degree_distribution: uniform
+      power_law_exponent: 1.2
+      destination_skew: 0.0
     - name: large
       sampled_nodes: 128
       sampled_edges: 2048
-      dst_skewed: false
+      degree_distribution: uniform
+      power_law_exponent: 1.2
+      destination_skew: 0.0
     - name: skewed_high_degree
       sampled_nodes: 128
       sampled_edges: 2048
-      dst_skewed: true
+      degree_distribution: power_law
+      power_law_exponent: 1.2
+      destination_skew: 1.5
 
 hybrid_placement:
   hot_dst_degree_threshold: 64
