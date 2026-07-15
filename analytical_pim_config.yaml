@@ -25,7 +25,6 @@ near_bank_pe:
   p8v2_lut_group_cycles: 1
   vadd_group_cycles: 1
   scale_group_cycles: 1
-  reducer_group_cycles: 1
   softmax_group_cycles: 1
   scheduling_overhead_per_tile_cycles: 16
   h100_group_cycles: 1
@@ -88,6 +87,27 @@ hybrid_placement:
   locality_weight: 0.25
   bank_balance_weight: 1.0
   pseudo_channel_balance_weight: 1.0
+
+communication:
+  q_broadcast_bandwidth_bytes_per_cycle_per_bank: 64
+  q_broadcast_startup_cycles: 16
+  bank_to_pc_bandwidth_bytes_per_cycle_per_bank: 32
+  bank_to_pc_startup_cycles: 16
+  pc_to_global_bandwidth_bytes_per_cycle_per_pc: 64
+  pc_to_global_startup_cycles: 32
+  global_to_npu_bandwidth_bytes_per_cycle: 256
+  global_to_npu_startup_cycles: 32
+
+reducer:
+  pc_lanes_per_pseudo_channel: 16
+  pc_throughput_groups_per_cycle_per_lane: 1
+  pc_input_bandwidth_bytes_per_cycle: 512
+  pc_concurrent_destination_groups: 64
+  global_units: 1
+  global_lanes_per_unit: 64
+  global_throughput_groups_per_cycle_per_lane: 1
+  global_input_bandwidth_bytes_per_cycle: 1024
+  global_concurrent_destination_groups: 256
 
 placement_sweep:
   - hash

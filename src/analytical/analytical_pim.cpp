@@ -63,7 +63,6 @@ struct PEConfig {
   double p8v2_lut_group_cycles = 1.0;
   double vadd_group_cycles = 1.0;
   double scale_group_cycles = 1.0;
-  double reducer_group_cycles = 1.0;
   double softmax_group_cycles = 1.0;
   double scheduling_overhead_per_tile_cycles = 16.0;
 
@@ -134,6 +133,29 @@ struct HybridPlacementConfig {
   double pseudo_channel_balance_weight = 1.0;
 };
 
+struct CommunicationConfig {
+  double q_broadcast_bandwidth_bytes_per_cycle_per_bank = 64.0;
+  double q_broadcast_startup_cycles = 16.0;
+  double bank_to_pc_bandwidth_bytes_per_cycle_per_bank = 32.0;
+  double bank_to_pc_startup_cycles = 16.0;
+  double pc_to_global_bandwidth_bytes_per_cycle_per_pc = 64.0;
+  double pc_to_global_startup_cycles = 32.0;
+  double global_to_npu_bandwidth_bytes_per_cycle = 256.0;
+  double global_to_npu_startup_cycles = 32.0;
+};
+
+struct ReducerConfig {
+  int pc_lanes_per_pseudo_channel = 16;
+  double pc_throughput_groups_per_cycle_per_lane = 1.0;
+  double pc_input_bandwidth_bytes_per_cycle = 512.0;
+  int pc_concurrent_destination_groups = 64;
+  int global_units = 1;
+  int global_lanes_per_unit = 64;
+  double global_throughput_groups_per_cycle_per_lane = 1.0;
+  double global_input_bandwidth_bytes_per_cycle = 1024.0;
+  int global_concurrent_destination_groups = 256;
+};
+
 struct OutputConfig {
   std::string per_query_csv = "../data/analytical_pim_per_query.csv";
   std::string aggregate_csv = "../data/analytical_pim_aggregate.csv";
@@ -171,6 +193,7 @@ struct GraphSanity {
   double out_degree_p50 = 0.0;
   double out_degree_p95 = 0.0;
   double out_degree_max = 0.0;
+  double dst_degree_hist_0 = 0.0;
   double dst_degree_hist_1 = 0.0;
   double dst_degree_hist_2_3 = 0.0;
   double dst_degree_hist_4_7 = 0.0;
@@ -209,6 +232,8 @@ struct SimulationConfig {
   ModelConfig model;
   WorkloadSuiteConfig suite;
   HybridPlacementConfig hybrid;
+  CommunicationConfig communication;
+  ReducerConfig reducer;
   OutputConfig output;
   std::vector<std::string> placements{kPlacementHash, kPlacementDegreeBalanced,
                                       kPlacementSourceDstLocality,
@@ -273,6 +298,26 @@ struct QueryResult {
   double h100_layout_conversion_cycles = 0.0;
   double h100_irregular_gather_penalty_cycles = 0.0;
   double h100_small_batch_penalty_cycles = 0.0;
+  double compute_cycles = 0.0;
+  double communication_cycles = 0.0;
+  double q_broadcast_cycles = 0.0;
+  double bank_to_pc_communication_cycles = 0.0;
+  double pc_to_global_communication_cycles = 0.0;
+  double global_to_npu_communication_cycles = 0.0;
+  double q_broadcast_critical_bank_bytes = 0.0;
+  double bank_to_pc_total_bytes = 0.0;
+  double bank_to_pc_critical_bank_bytes = 0.0;
+  double bank_to_pc_critical_pc_bytes = 0.0;
+  double pc_to_global_total_bytes = 0.0;
+  double pc_to_global_critical_pc_bytes = 0.0;
+  double global_to_npu_bytes = 0.0;
+  double pc_reducer_input_groups = 0.0;
+  double pc_reducer_output_groups = 0.0;
+  double global_reducer_input_groups = 0.0;
+  double global_reducer_output_groups = 0.0;
+  double critical_path_cycles = 0.0;
+  double critical_path_latency_ns = 0.0;
+  double traffic_stall_fraction = 0.0;
   std::string bottleneck_stage = "none";
   double bottleneck_cycles = 0.0;
   double bottleneck_fraction = 0.0;
@@ -425,8 +470,6 @@ SimulationConfig LoadConfig(const std::string& config_path) {
       ReadScalar<double>(pe, "vadd_group_cycles", 1.0);
   config.pe.scale_group_cycles =
       ReadScalar<double>(pe, "scale_group_cycles", 1.0);
-  config.pe.reducer_group_cycles =
-      ReadScalar<double>(pe, "reducer_group_cycles", 1.0);
   config.pe.softmax_group_cycles =
       ReadScalar<double>(pe, "softmax_group_cycles", 1.0);
   config.pe.scheduling_overhead_per_tile_cycles =
@@ -516,6 +559,53 @@ SimulationConfig LoadConfig(const std::string& config_path) {
   config.hybrid.pseudo_channel_balance_weight = ReadScalar<double>(
       hybrid, "pseudo_channel_balance_weight", 1.0);
 
+  const YAML::Node communication = root["communication"];
+  config.communication.q_broadcast_bandwidth_bytes_per_cycle_per_bank =
+      ReadScalar<double>(
+          communication,
+          "q_broadcast_bandwidth_bytes_per_cycle_per_bank", 64.0);
+  config.communication.q_broadcast_startup_cycles =
+      ReadScalar<double>(communication, "q_broadcast_startup_cycles", 16.0);
+  config.communication.bank_to_pc_bandwidth_bytes_per_cycle_per_bank =
+      ReadScalar<double>(
+          communication,
+          "bank_to_pc_bandwidth_bytes_per_cycle_per_bank", 32.0);
+  config.communication.bank_to_pc_startup_cycles =
+      ReadScalar<double>(communication, "bank_to_pc_startup_cycles", 16.0);
+  config.communication.pc_to_global_bandwidth_bytes_per_cycle_per_pc =
+      ReadScalar<double>(
+          communication,
+          "pc_to_global_bandwidth_bytes_per_cycle_per_pc", 64.0);
+  config.communication.pc_to_global_startup_cycles = ReadScalar<double>(
+      communication, "pc_to_global_startup_cycles", 32.0);
+  config.communication.global_to_npu_bandwidth_bytes_per_cycle =
+      ReadScalar<double>(communication,
+                         "global_to_npu_bandwidth_bytes_per_cycle", 256.0);
+  config.communication.global_to_npu_startup_cycles = ReadScalar<double>(
+      communication, "global_to_npu_startup_cycles", 32.0);
+
+  const YAML::Node reducer = root["reducer"];
+  config.reducer.pc_lanes_per_pseudo_channel = ReadScalar<int>(
+      reducer, "pc_lanes_per_pseudo_channel", 16);
+  config.reducer.pc_throughput_groups_per_cycle_per_lane =
+      ReadScalar<double>(reducer,
+                         "pc_throughput_groups_per_cycle_per_lane", 1.0);
+  config.reducer.pc_input_bandwidth_bytes_per_cycle = ReadScalar<double>(
+      reducer, "pc_input_bandwidth_bytes_per_cycle", 512.0);
+  config.reducer.pc_concurrent_destination_groups = ReadScalar<int>(
+      reducer, "pc_concurrent_destination_groups", 64);
+  config.reducer.global_units =
+      ReadScalar<int>(reducer, "global_units", 1);
+  config.reducer.global_lanes_per_unit =
+      ReadScalar<int>(reducer, "global_lanes_per_unit", 64);
+  config.reducer.global_throughput_groups_per_cycle_per_lane =
+      ReadScalar<double>(
+          reducer, "global_throughput_groups_per_cycle_per_lane", 1.0);
+  config.reducer.global_input_bandwidth_bytes_per_cycle = ReadScalar<double>(
+      reducer, "global_input_bandwidth_bytes_per_cycle", 1024.0);
+  config.reducer.global_concurrent_destination_groups = ReadScalar<int>(
+      reducer, "global_concurrent_destination_groups", 256);
+
   const auto placements = ReadStringVector(root["placement_sweep"]);
   if (!placements.empty()) {
     config.placements = placements;
@@ -540,7 +630,27 @@ SimulationConfig LoadConfig(const std::string& config_path) {
       config.hybrid.max_banks_per_destination <= 0 ||
       config.hybrid.locality_weight < 0.0 ||
       config.hybrid.bank_balance_weight < 0.0 ||
-      config.hybrid.pseudo_channel_balance_weight < 0.0) {
+      config.hybrid.pseudo_channel_balance_weight < 0.0 ||
+      config.communication.q_broadcast_bandwidth_bytes_per_cycle_per_bank <=
+          0.0 ||
+      config.communication.bank_to_pc_bandwidth_bytes_per_cycle_per_bank <=
+          0.0 ||
+      config.communication.pc_to_global_bandwidth_bytes_per_cycle_per_pc <=
+          0.0 ||
+      config.communication.global_to_npu_bandwidth_bytes_per_cycle <= 0.0 ||
+      config.communication.q_broadcast_startup_cycles < 0.0 ||
+      config.communication.bank_to_pc_startup_cycles < 0.0 ||
+      config.communication.pc_to_global_startup_cycles < 0.0 ||
+      config.communication.global_to_npu_startup_cycles < 0.0 ||
+      config.reducer.pc_lanes_per_pseudo_channel <= 0 ||
+      config.reducer.pc_throughput_groups_per_cycle_per_lane <= 0.0 ||
+      config.reducer.pc_input_bandwidth_bytes_per_cycle <= 0.0 ||
+      config.reducer.pc_concurrent_destination_groups <= 0 ||
+      config.reducer.global_units <= 0 ||
+      config.reducer.global_lanes_per_unit <= 0 ||
+      config.reducer.global_throughput_groups_per_cycle_per_lane <= 0.0 ||
+      config.reducer.global_input_bandwidth_bytes_per_cycle <= 0.0 ||
+      config.reducer.global_concurrent_destination_groups <= 0) {
     throw std::runtime_error("Invalid analytical PIM config");
   }
   for (const auto& workload : config.suite.workloads) {
@@ -588,6 +698,27 @@ void PrintSanityCheck(const SimulationConfig& config) {
             << ", bank_balance_weight=" << config.hybrid.bank_balance_weight
             << ", pseudo_channel_balance_weight="
             << config.hybrid.pseudo_channel_balance_weight << "\n";
+  std::cout << "communication_bandwidth_bytes_per_cycle: q_per_bank="
+            << config.communication
+                   .q_broadcast_bandwidth_bytes_per_cycle_per_bank
+            << ", bank_to_pc_per_bank="
+            << config.communication
+                   .bank_to_pc_bandwidth_bytes_per_cycle_per_bank
+            << ", pc_to_global_per_pc="
+            << config.communication
+                   .pc_to_global_bandwidth_bytes_per_cycle_per_pc
+            << ", global_to_npu="
+            << config.communication.global_to_npu_bandwidth_bytes_per_cycle
+            << "\n";
+  std::cout << "reducer: pc_lanes="
+            << config.reducer.pc_lanes_per_pseudo_channel
+            << ", pc_input_bytes_per_cycle="
+            << config.reducer.pc_input_bandwidth_bytes_per_cycle
+            << ", global_units=" << config.reducer.global_units
+            << ", global_lanes_per_unit="
+            << config.reducer.global_lanes_per_unit
+            << ", global_input_bytes_per_cycle="
+            << config.reducer.global_input_bandwidth_bytes_per_cycle << "\n";
 }
 
 void AddUniqueNode(std::vector<int>& nodes, std::vector<bool>& mask, int node) {
@@ -808,7 +939,9 @@ GraphSanity DiagnoseGraph(const QuerySample& query,
     in_values.push_back(in_degree[node]);
     out_values.push_back(out_degree[node]);
     const int degree = in_degree[node];
-    if (degree == 1) {
+    if (degree == 0) {
+      sanity.dst_degree_hist_0++;
+    } else if (degree == 1) {
       sanity.dst_degree_hist_1++;
     } else if (degree <= 3 && degree > 1) {
       sanity.dst_degree_hist_2_3++;
@@ -1267,8 +1400,11 @@ QueryResult SimulateQuery(const SimulationConfig& config,
                result.h100_scale_dequant_cycles +
                result.h100_layout_conversion_cycles;
     }
+    result.compute_cycles = total;
     result.total_cycles = total;
     result.latency_ns = total * config.pe.clock_ns;
+    result.critical_path_cycles = result.total_cycles;
+    result.critical_path_latency_ns = result.latency_ns;
     SetBottleneck(
         result,
         {{"h100_gnn_score_compute", result.gnn_score_cycles},
@@ -1386,37 +1522,176 @@ QueryResult SimulateQuery(const SimulationConfig& config,
       result.diagnosis.pc_group_count_after_pc_reduce /
       std::max(1, config.model.memory_tokens) * buffer_per_active_group;
 
-  double pc_input_groups = 0.0;
-  if (baseline == kPIMNoLocalCombine) {
-    pc_input_groups =
-        result.diagnosis.edge_message_count_before_local_combine;
-  } else if (baseline == kPIMLocalCombine) {
-    pc_input_groups = result.diagnosis.bank_local_group_count_after_combine;
-  } else {
+  if (baseline != kPIMNoLocalCombine && baseline != kPIMLocalCombine) {
     throw std::runtime_error("Unknown baseline: " + baseline);
   }
-  const double pc_output_groups =
-      result.diagnosis.pc_group_count_after_pc_reduce;
-  result.message_reduce_traffic_bytes =
-      (pc_input_groups + pc_output_groups) * config.tile.channel_group *
-      config.precision.partial_msg_bytes;
-  result.pc_reduce_cycles =
-      pc_input_groups * config.pe.reducer_group_cycles /
-      std::max<int>(1, active_pcs.size());
-  result.global_reduce_cycles =
-      pc_output_groups * config.pe.reducer_group_cycles;
+  const double group_multiplier =
+      1.0 * config.model.memory_tokens * config.model.gnn_heads *
+      groups_per_head;
+  const double message_bytes_per_group =
+      config.tile.channel_group * config.precision.partial_msg_bytes;
+  std::vector<std::set<int>> destinations_by_bank(
+      config.topology.total_banks());
+  std::vector<std::set<int>> destinations_by_pc(
+      config.topology.total_pseudo_channels());
+  std::set<int> global_destinations;
+  for (const auto& edge : query.edges) {
+    destinations_by_bank[edge.bank].insert(edge.dst);
+    destinations_by_pc[edge.pseudo_channel].insert(edge.dst);
+    global_destinations.insert(edge.dst);
+  }
 
+  std::vector<double> bank_to_pc_bytes_by_bank(
+      config.topology.total_banks(), 0.0);
+  std::vector<double> pc_input_groups_by_pc(
+      config.topology.total_pseudo_channels(), 0.0);
+  for (int bank = 0; bank < config.topology.total_banks(); ++bank) {
+    const double raw_messages =
+        baseline == kPIMLocalCombine ? destinations_by_bank[bank].size()
+                                     : edge_count_by_bank[bank];
+    const double groups = raw_messages * group_multiplier;
+    const double bytes = groups * message_bytes_per_group;
+    bank_to_pc_bytes_by_bank[bank] = bytes;
+    pc_input_groups_by_pc[config.topology.bank_to_pseudo_channel(bank)] +=
+        groups;
+  }
+
+  std::vector<double> pc_output_groups_by_pc(
+      config.topology.total_pseudo_channels(), 0.0);
+  std::vector<double> pc_to_global_bytes_by_pc(
+      config.topology.total_pseudo_channels(), 0.0);
+  for (int pc = 0; pc < config.topology.total_pseudo_channels(); ++pc) {
+    pc_output_groups_by_pc[pc] =
+        destinations_by_pc[pc].size() * group_multiplier;
+    pc_to_global_bytes_by_pc[pc] =
+        pc_output_groups_by_pc[pc] * message_bytes_per_group;
+  }
+
+  result.pc_reducer_input_groups =
+      std::accumulate(pc_input_groups_by_pc.begin(),
+                      pc_input_groups_by_pc.end(), 0.0);
+  result.pc_reducer_output_groups =
+      std::accumulate(pc_output_groups_by_pc.begin(),
+                      pc_output_groups_by_pc.end(), 0.0);
+  result.global_reducer_input_groups = result.pc_reducer_output_groups;
+  result.global_reducer_output_groups =
+      global_destinations.size() * group_multiplier;
+
+  result.q_broadcast_critical_bank_bytes =
+      active_banks.empty()
+          ? 0.0
+          : 1.0 * num_token_tiles * config.model.gnn_heads *
+                config.model.head_dim * config.precision.q8_bytes;
+  if (result.q_broadcast_bytes > 0.0) {
+    result.q_broadcast_cycles =
+        num_token_tiles * config.communication.q_broadcast_startup_cycles +
+        result.q_broadcast_critical_bank_bytes /
+            config.communication
+                .q_broadcast_bandwidth_bytes_per_cycle_per_bank;
+  }
+
+  result.bank_to_pc_total_bytes =
+      std::accumulate(bank_to_pc_bytes_by_bank.begin(),
+                      bank_to_pc_bytes_by_bank.end(), 0.0);
+  result.bank_to_pc_critical_bank_bytes =
+      bank_to_pc_bytes_by_bank.empty()
+          ? 0.0
+          : *std::max_element(bank_to_pc_bytes_by_bank.begin(),
+                              bank_to_pc_bytes_by_bank.end());
+  std::vector<double> bank_to_pc_bytes_by_pc(
+      config.topology.total_pseudo_channels(), 0.0);
+  for (int bank = 0; bank < config.topology.total_banks(); ++bank) {
+    bank_to_pc_bytes_by_pc[config.topology.bank_to_pseudo_channel(bank)] +=
+        bank_to_pc_bytes_by_bank[bank];
+  }
+  result.bank_to_pc_critical_pc_bytes =
+      bank_to_pc_bytes_by_pc.empty()
+          ? 0.0
+          : *std::max_element(bank_to_pc_bytes_by_pc.begin(),
+                              bank_to_pc_bytes_by_pc.end());
+  if (result.bank_to_pc_total_bytes > 0.0) {
+    result.bank_to_pc_communication_cycles =
+        num_token_tiles * config.communication.bank_to_pc_startup_cycles +
+        std::max(
+            result.bank_to_pc_critical_bank_bytes /
+                config.communication
+                    .bank_to_pc_bandwidth_bytes_per_cycle_per_bank,
+            result.bank_to_pc_critical_pc_bytes /
+                config.reducer.pc_input_bandwidth_bytes_per_cycle);
+  }
+
+  result.pc_to_global_total_bytes =
+      std::accumulate(pc_to_global_bytes_by_pc.begin(),
+                      pc_to_global_bytes_by_pc.end(), 0.0);
+  result.pc_to_global_critical_pc_bytes =
+      pc_to_global_bytes_by_pc.empty()
+          ? 0.0
+          : *std::max_element(pc_to_global_bytes_by_pc.begin(),
+                              pc_to_global_bytes_by_pc.end());
+  if (result.pc_to_global_total_bytes > 0.0) {
+    result.pc_to_global_communication_cycles =
+        num_token_tiles * config.communication.pc_to_global_startup_cycles +
+        std::max(
+            result.pc_to_global_critical_pc_bytes /
+                config.communication
+                    .pc_to_global_bandwidth_bytes_per_cycle_per_pc,
+            result.pc_to_global_total_bytes /
+                config.reducer.global_input_bandwidth_bytes_per_cycle);
+  }
+
+  result.global_to_npu_bytes =
+      result.global_reducer_output_groups * message_bytes_per_group;
+  if (result.global_to_npu_bytes > 0.0) {
+    result.global_to_npu_communication_cycles =
+        num_token_tiles * config.communication.global_to_npu_startup_cycles +
+        result.global_to_npu_bytes /
+            config.communication.global_to_npu_bandwidth_bytes_per_cycle;
+  }
+
+  const double max_pc_input_groups =
+      pc_input_groups_by_pc.empty()
+          ? 0.0
+          : *std::max_element(pc_input_groups_by_pc.begin(),
+                              pc_input_groups_by_pc.end());
+  const int pc_effective_lanes = std::min(
+      config.reducer.pc_lanes_per_pseudo_channel,
+      config.reducer.pc_concurrent_destination_groups);
+  result.pc_reduce_cycles =
+      max_pc_input_groups /
+      (pc_effective_lanes *
+       config.reducer.pc_throughput_groups_per_cycle_per_lane);
+  const int global_effective_lanes = std::min(
+      config.reducer.global_units * config.reducer.global_lanes_per_unit,
+      config.reducer.global_concurrent_destination_groups);
+  result.global_reduce_cycles =
+      result.global_reducer_input_groups /
+      (global_effective_lanes *
+       config.reducer.global_throughput_groups_per_cycle_per_lane);
+
+  result.message_reduce_traffic_bytes =
+      result.bank_to_pc_total_bytes + result.pc_to_global_total_bytes;
   result.gnn_score_cycles = score_cycles;
   result.gnn_message_cycles = message_cycles;
   result.cached_kv_cycles = kv_cycles;
+  result.compute_cycles = score_cycles + message_cycles + kv_cycles;
   result.reducer_cycles =
       result.pc_reduce_cycles + result.global_reduce_cycles;
+  result.communication_cycles =
+      result.q_broadcast_cycles + result.bank_to_pc_communication_cycles +
+      result.pc_to_global_communication_cycles +
+      result.global_to_npu_communication_cycles;
   result.scheduling_cycles =
       num_token_tiles * config.pe.scheduling_overhead_per_tile_cycles;
-  const double near_bank_cycles = score_cycles + message_cycles + kv_cycles;
-  result.total_cycles =
-      near_bank_cycles + result.reducer_cycles + result.scheduling_cycles;
+  result.total_cycles = result.compute_cycles + result.communication_cycles +
+                        result.reducer_cycles + result.scheduling_cycles;
   result.latency_ns = result.total_cycles * config.pe.clock_ns;
+  result.critical_path_cycles = result.total_cycles;
+  result.critical_path_latency_ns = result.latency_ns;
+  result.traffic_stall_fraction =
+      result.total_cycles == 0.0
+          ? 0.0
+          : result.communication_cycles / result.total_cycles;
+  const double near_bank_cycles = result.compute_cycles;
   result.near_bank_pe_utilization =
       near_bank_cycles == 0.0
           ? 0.0
@@ -1426,8 +1701,18 @@ QueryResult SimulateQuery(const SimulationConfig& config,
   result.reducer_utilization =
       result.reducer_cycles == 0.0
           ? 0.0
-          : (pc_input_groups + pc_output_groups) /
-                (result.reducer_cycles * std::max<int>(1, active_pcs.size() + 1));
+          : (result.pc_reducer_input_groups +
+             result.global_reducer_input_groups) /
+                (result.pc_reduce_cycles *
+                     std::max(1.0,
+                              result.placement_validation
+                                  .edge_active_pseudo_channels) *
+                     pc_effective_lanes *
+                     config.reducer
+                         .pc_throughput_groups_per_cycle_per_lane +
+                 result.global_reduce_cycles * global_effective_lanes *
+                     config.reducer
+                         .global_throughput_groups_per_cycle_per_lane);
   SetBottleneck(
       result,
       {{"pim_q8k8_vdot", result.q8k8_vdot_cycles},
@@ -1440,6 +1725,13 @@ QueryResult SimulateQuery(const SimulationConfig& config,
        {"pim_cached_kv_scale", result.cached_kv_scale_cycles},
        {"pim_pc_reduce", result.pc_reduce_cycles},
        {"pim_global_reduce", result.global_reduce_cycles},
+       {"q_broadcast_communication", result.q_broadcast_cycles},
+       {"bank_to_pc_communication",
+        result.bank_to_pc_communication_cycles},
+       {"pc_to_global_communication",
+        result.pc_to_global_communication_cycles},
+       {"global_to_npu_communication",
+        result.global_to_npu_communication_cycles},
        {"scheduling", result.scheduling_cycles}});
   return result;
 }
@@ -1489,7 +1781,8 @@ void WritePerQueryCSV(const std::string& path,
          "duplicate_edge_count,duplicate_edge_ratio,unique_src_dst_count,"
          "in_degree_mean,in_degree_p50,in_degree_p95,in_degree_max,"
          "out_degree_mean,out_degree_p50,out_degree_p95,out_degree_max,"
-         "dst_degree_hist_1,dst_degree_hist_2_3,dst_degree_hist_4_7,"
+         "dst_degree_hist_0,dst_degree_hist_1,dst_degree_hist_2_3,"
+         "dst_degree_hist_4_7,"
          "dst_degree_hist_8_15,dst_degree_hist_16_31,"
          "dst_degree_hist_32_63,dst_degree_hist_64_plus,"
          "unique_source_banks,mapping_difference_ratio_vs_hash,"
@@ -1499,7 +1792,17 @@ void WritePerQueryCSV(const std::string& path,
          "pc_edge_count_p95,pc_edge_count_max,sharded_destination_count,"
          "total_destination_shards,average_shards_per_destination,"
          "max_shards_per_destination,active_bank_histogram,"
-         "active_pc_histogram\n";
+         "active_pc_histogram,compute_cycles,communication_cycles,"
+         "q_broadcast_cycles,bank_to_pc_communication_cycles,"
+         "pc_to_global_communication_cycles,"
+         "global_to_npu_communication_cycles,critical_path_cycles,"
+         "critical_path_latency_ns,traffic_stall_fraction,"
+         "q_broadcast_critical_bank_bytes,bank_to_pc_total_bytes,"
+         "bank_to_pc_critical_bank_bytes,bank_to_pc_critical_pc_bytes,"
+         "pc_to_global_total_bytes,pc_to_global_critical_pc_bytes,"
+         "global_to_npu_bytes,pc_reducer_input_groups,"
+         "pc_reducer_output_groups,global_reducer_input_groups,"
+         "global_reducer_output_groups\n";
   csv << std::fixed << std::setprecision(6);
   for (const auto& r : results) {
     const Diagnosis& d = r.diagnosis;
@@ -1547,7 +1850,8 @@ void WritePerQueryCSV(const std::string& path,
         << g.in_degree_p95 << "," << g.in_degree_max << ","
         << g.out_degree_mean << "," << g.out_degree_p50 << ","
         << g.out_degree_p95 << "," << g.out_degree_max << ","
-        << g.dst_degree_hist_1 << "," << g.dst_degree_hist_2_3 << ","
+        << g.dst_degree_hist_0 << "," << g.dst_degree_hist_1 << ","
+        << g.dst_degree_hist_2_3 << ","
         << g.dst_degree_hist_4_7 << "," << g.dst_degree_hist_8_15 << ","
         << g.dst_degree_hist_16_31 << "," << g.dst_degree_hist_32_63 << ","
         << g.dst_degree_hist_64_plus << "," << g.unique_source_banks << ","
@@ -1560,7 +1864,23 @@ void WritePerQueryCSV(const std::string& path,
         << p.sharded_destination_count << "," << p.total_destination_shards
         << "," << p.average_shards_per_destination << ","
         << p.max_shards_per_destination << "," << p.active_bank_histogram
-        << "," << p.active_pc_histogram << "\n";
+        << "," << p.active_pc_histogram << "," << r.compute_cycles << ","
+        << r.communication_cycles << "," << r.q_broadcast_cycles << ","
+        << r.bank_to_pc_communication_cycles << ","
+        << r.pc_to_global_communication_cycles << ","
+        << r.global_to_npu_communication_cycles << ","
+        << r.critical_path_cycles << "," << r.critical_path_latency_ns << ","
+        << r.traffic_stall_fraction << ","
+        << r.q_broadcast_critical_bank_bytes << ","
+        << r.bank_to_pc_total_bytes << ","
+        << r.bank_to_pc_critical_bank_bytes << ","
+        << r.bank_to_pc_critical_pc_bytes << ","
+        << r.pc_to_global_total_bytes << ","
+        << r.pc_to_global_critical_pc_bytes << "," << r.global_to_npu_bytes
+        << "," << r.pc_reducer_input_groups << ","
+        << r.pc_reducer_output_groups << ","
+        << r.global_reducer_input_groups << ","
+        << r.global_reducer_output_groups << "\n";
   }
 }
 
@@ -1651,8 +1971,9 @@ void WriteAggregateCSV(const std::string& path,
          "mean_bottleneck_fraction,duplicate_edge_count,"
          "duplicate_edge_ratio,unique_src_dst_count,in_degree_mean,"
          "in_degree_p50,in_degree_p95,in_degree_max,out_degree_mean,"
-         "out_degree_p50,out_degree_p95,out_degree_max,dst_degree_hist_1,"
-         "dst_degree_hist_2_3,dst_degree_hist_4_7,dst_degree_hist_8_15,"
+         "out_degree_p50,out_degree_p95,out_degree_max,dst_degree_hist_0,"
+         "dst_degree_hist_1,dst_degree_hist_2_3,dst_degree_hist_4_7,"
+         "dst_degree_hist_8_15,"
          "dst_degree_hist_16_31,dst_degree_hist_32_63,"
          "dst_degree_hist_64_plus,unique_source_banks,"
          "mapping_difference_ratio_vs_hash,edge_active_banks,"
@@ -1661,7 +1982,22 @@ void WriteAggregateCSV(const std::string& path,
          "pc_edge_count_mean,pc_edge_count_p50,pc_edge_count_p95,"
          "pc_edge_count_max,sharded_destination_count,"
          "total_destination_shards,average_shards_per_destination,"
-         "max_shards_per_destination\n";
+         "max_shards_per_destination,mean_compute_cycles,"
+         "mean_communication_cycles,mean_q_broadcast_cycles,"
+         "mean_bank_to_pc_communication_cycles,"
+         "mean_pc_to_global_communication_cycles,"
+         "mean_global_to_npu_communication_cycles,"
+         "mean_critical_path_cycles,mean_critical_path_latency_ns,"
+         "mean_traffic_stall_fraction,"
+         "mean_q_broadcast_critical_bank_bytes,"
+         "mean_bank_to_pc_total_bytes,"
+         "mean_bank_to_pc_critical_bank_bytes,"
+         "mean_bank_to_pc_critical_pc_bytes,"
+         "mean_pc_to_global_total_bytes,"
+         "mean_pc_to_global_critical_pc_bytes,mean_global_to_npu_bytes,"
+         "mean_pc_reducer_input_groups,mean_pc_reducer_output_groups,"
+         "mean_global_reducer_input_groups,"
+         "mean_global_reducer_output_groups\n";
   csv << std::fixed << std::setprecision(6);
   for (const auto& workload : config.suite.workloads) {
     for (const auto& placement : config.placements) {
@@ -1793,6 +2129,7 @@ void WriteAggregateCSV(const std::string& path,
               << "," << MeanGraphField(group, &GraphSanity::out_degree_p50)
               << "," << MeanGraphField(group, &GraphSanity::out_degree_p95)
               << "," << MeanGraphField(group, &GraphSanity::out_degree_max)
+              << "," << MeanGraphField(group, &GraphSanity::dst_degree_hist_0)
               << "," << MeanGraphField(group, &GraphSanity::dst_degree_hist_1)
               << ","
               << MeanGraphField(group, &GraphSanity::dst_degree_hist_2_3)
@@ -1855,6 +2192,60 @@ void WriteAggregateCSV(const std::string& path,
               << ","
               << MeanPlacementField(
                      group, &PlacementValidation::max_shards_per_destination)
+              << "," << MeanResultField(group, &QueryResult::compute_cycles)
+              << ","
+              << MeanResultField(group, &QueryResult::communication_cycles)
+              << ","
+              << MeanResultField(group, &QueryResult::q_broadcast_cycles)
+              << ","
+              << MeanResultField(
+                     group, &QueryResult::bank_to_pc_communication_cycles)
+              << ","
+              << MeanResultField(
+                     group, &QueryResult::pc_to_global_communication_cycles)
+              << ","
+              << MeanResultField(
+                     group, &QueryResult::global_to_npu_communication_cycles)
+              << ","
+              << MeanResultField(group, &QueryResult::critical_path_cycles)
+              << ","
+              << MeanResultField(group,
+                                 &QueryResult::critical_path_latency_ns)
+              << ","
+              << MeanResultField(group,
+                                 &QueryResult::traffic_stall_fraction)
+              << ","
+              << MeanResultField(
+                     group, &QueryResult::q_broadcast_critical_bank_bytes)
+              << ","
+              << MeanResultField(group,
+                                 &QueryResult::bank_to_pc_total_bytes)
+              << ","
+              << MeanResultField(
+                     group, &QueryResult::bank_to_pc_critical_bank_bytes)
+              << ","
+              << MeanResultField(
+                     group, &QueryResult::bank_to_pc_critical_pc_bytes)
+              << ","
+              << MeanResultField(group,
+                                 &QueryResult::pc_to_global_total_bytes)
+              << ","
+              << MeanResultField(
+                     group, &QueryResult::pc_to_global_critical_pc_bytes)
+              << ","
+              << MeanResultField(group, &QueryResult::global_to_npu_bytes)
+              << ","
+              << MeanResultField(group,
+                                 &QueryResult::pc_reducer_input_groups)
+              << ","
+              << MeanResultField(group,
+                                 &QueryResult::pc_reducer_output_groups)
+              << ","
+              << MeanResultField(group,
+                                 &QueryResult::global_reducer_input_groups)
+              << ","
+              << MeanResultField(group,
+                                 &QueryResult::global_reducer_output_groups)
               << "\n";
         }
       }
@@ -1864,7 +2255,7 @@ void WriteAggregateCSV(const std::string& path,
 
 void PrintSummary(const SimulationConfig& config,
                   const std::vector<QueryResult>& results) {
-  std::cout << "Analytical PIM Patch 3 hybrid-placement run\n";
+  std::cout << "Analytical PIM Patch 4 communication-aware run\n";
   std::cout << "workloads=" << config.suite.workloads.size()
             << ", placements=" << config.placements.size()
             << ", baselines=" << config.baselines.size()
@@ -1874,6 +2265,10 @@ void PrintSummary(const SimulationConfig& config,
     for (const auto& placement : config.placements) {
       std::vector<double> local_reduction;
       std::vector<double> latency;
+      std::vector<double> compute;
+      std::vector<double> communication;
+      std::vector<double> reducer;
+      std::vector<double> traffic_stall;
       std::vector<const QueryResult*> group;
       for (const auto& r : results) {
         if (r.workload == workload.name && r.placement == placement &&
@@ -1881,6 +2276,10 @@ void PrintSummary(const SimulationConfig& config,
           local_reduction.push_back(
               r.diagnosis.local_combine_reduction_ratio);
           latency.push_back(r.latency_ns);
+          compute.push_back(r.compute_cycles);
+          communication.push_back(r.communication_cycles);
+          reducer.push_back(r.reducer_cycles);
+          traffic_stall.push_back(r.traffic_stall_fraction);
           group.push_back(&r);
         }
       }
@@ -1888,6 +2287,11 @@ void PrintSummary(const SimulationConfig& config,
         std::cout << workload.name << "/" << placement
                   << " local-combine T=4 mean_latency_ns=" << std::fixed
                   << std::setprecision(2) << Mean(latency)
+                  << " compute_cycles=" << Mean(compute)
+                  << " communication_cycles=" << Mean(communication)
+                  << " reducer_cycles=" << Mean(reducer)
+                  << " traffic_stall=" << std::setprecision(4)
+                  << Mean(traffic_stall)
                   << " mean_local_reduction=" << std::setprecision(4)
                   << Mean(local_reduction)
                   << " bottleneck=" << DominantBottleneck(group).first << "\n";
