@@ -106,6 +106,35 @@ target node union target 1-hop neighbors union high-degree sampled nodes
 The CSV reports both `selected_kv_ratio_vs_sampled_nodes` and
 `selected_kv_ratio_vs_full_graph`.
 
+## Selected-KV Placement Diagnosis
+
+Selected-KV storage placement is diagnosed independently from edge execution
+placement. The per-query and aggregate CSV files include:
+
+- `selected_kv_active_banks`
+- `selected_kv_items_per_bank_mean`
+- `selected_kv_items_per_bank_p95`
+- `selected_kv_items_per_bank_max`
+- `selected_kv_bank_imbalance`
+- `selected_kv_bank_collision_ratio`
+
+The item-count statistics and imbalance use active banks only. Imbalance is
+`max / mean`. Collision ratio is the fraction of selected items left after
+assigning one item to each active bank:
+
+```text
+(selected_kv_count - selected_kv_active_banks) / selected_kv_count
+```
+
+The per-query CSV retains `cached_kv_bottleneck_bank`. The aggregate CSV adds
+`dominant_cached_kv_bottleneck_bank` and the fraction of queries mapped to that
+bank. These fields explain why total selected-KV count and cached-KV
+critical-path latency need not be monotonic.
+
+In the current model, `degree_balanced` also balances selected-KV node storage.
+The other edge placement policies use node-hash selected-KV storage. A separate
+configurable KV placement policy is intentionally deferred to a later patch.
+
 ## Placement Sweep
 
 Patch 4 supports four placement policies:
@@ -313,4 +342,5 @@ The per-query CSV has:
 5 workloads * 16 queries * 4 placements * 4 baselines * 3 tile sizes = 3840 data rows
 ```
 
-Patch 4 currently emits 121 per-query columns and 108 aggregate columns.
+Patch 4 with selected-KV placement diagnosis emits 127 per-query columns and
+116 aggregate columns.

@@ -257,6 +257,15 @@ struct Diagnosis {
   double pseudo_channel_imbalance = 0.0;
 };
 
+struct KVPlacementDiagnosis {
+  double active_banks = 0.0;
+  double items_per_bank_mean = 0.0;
+  double items_per_bank_p95 = 0.0;
+  double items_per_bank_max = 0.0;
+  double bank_imbalance = 0.0;
+  double bank_collision_ratio = 0.0;
+};
+
 struct QueryResult {
   std::string workload;
   std::string placement;
@@ -333,6 +342,7 @@ struct QueryResult {
   GraphSanity graph_sanity;
   PlacementValidation placement_validation;
   Diagnosis diagnosis;
+  KVPlacementDiagnosis kv_placement_diagnosis;
 };
 
 template <typename T>
@@ -1224,6 +1234,36 @@ std::vector<int> SelectedKVCountByBank(const QuerySample& query,
   return counts;
 }
 
+KVPlacementDiagnosis DiagnoseKVPlacement(
+    const std::vector<int>& selected_count_by_bank) {
+  KVPlacementDiagnosis diagnosis;
+  std::vector<double> active_counts;
+  int total_items = 0;
+  for (int count : selected_count_by_bank) {
+    total_items += count;
+    if (count > 0) {
+      active_counts.push_back(count);
+    }
+  }
+
+  diagnosis.active_banks = active_counts.size();
+  diagnosis.items_per_bank_mean = Mean(active_counts);
+  diagnosis.items_per_bank_p95 = Percentile(active_counts, 0.95);
+  diagnosis.items_per_bank_max =
+      active_counts.empty()
+          ? 0.0
+          : *std::max_element(active_counts.begin(), active_counts.end());
+  diagnosis.bank_imbalance =
+      diagnosis.items_per_bank_mean == 0.0
+          ? 0.0
+          : diagnosis.items_per_bank_max / diagnosis.items_per_bank_mean;
+  diagnosis.bank_collision_ratio =
+      total_items == 0
+          ? 0.0
+          : 1.0 * (total_items - active_counts.size()) / total_items;
+  return diagnosis;
+}
+
 Diagnosis DiagnoseLocalCombine(const QuerySample& query,
                                const SimulationConfig& config) {
   const int groups_per_head = GroupsPerHead(config);
@@ -1367,6 +1407,8 @@ QueryResult SimulateQuery(const SimulationConfig& config,
   result.graph_sanity = DiagnoseGraph(query, config);
   result.placement_validation = ValidatePlacement(query, config);
   result.diagnosis = DiagnoseLocalCombine(query, config);
+  result.kv_placement_diagnosis =
+      DiagnoseKVPlacement(selected_count_by_bank);
 
   if (baseline == kH100Ideal || baseline == kH100Realistic) {
     result.gnn_score_cycles = score_groups * config.pe.h100_group_cycles;
@@ -1755,6 +1797,9 @@ void WritePerQueryCSV(const std::string& path,
          "num_token_tiles,sampled_node_count,sampled_edge_count,"
          "selected_kv_count,selected_kv_ratio_vs_sampled_nodes,"
          "selected_kv_ratio_vs_full_graph,selected_kv_bytes,"
+         "selected_kv_active_banks,selected_kv_items_per_bank_mean,"
+         "selected_kv_items_per_bank_p95,selected_kv_items_per_bank_max,"
+         "selected_kv_bank_imbalance,selected_kv_bank_collision_ratio,"
          "q_broadcast_bytes,score_traffic_bytes,p_return_traffic_bytes,"
          "message_reduce_traffic_bytes,local_combine_buffer_max_bytes,"
          "pc_reducer_buffer_max_bytes,gnn_score_cycles,gnn_message_cycles,"
@@ -1808,13 +1853,17 @@ void WritePerQueryCSV(const std::string& path,
     const Diagnosis& d = r.diagnosis;
     const GraphSanity& g = r.graph_sanity;
     const PlacementValidation& p = r.placement_validation;
+    const KVPlacementDiagnosis& k = r.kv_placement_diagnosis;
     csv << r.workload << "," << r.placement << "," << r.baseline << ","
         << r.query_id << "," << r.target_node << "," << r.memory_token_tile
         << "," << r.num_token_tiles << "," << r.sampled_node_count << ","
         << r.sampled_edge_count << "," << r.selected_kv_count << ","
         << r.selected_kv_ratio_vs_sampled_nodes << ","
         << r.selected_kv_ratio_vs_full_graph << "," << r.selected_kv_bytes
-        << "," << r.q_broadcast_bytes << "," << r.score_traffic_bytes << ","
+        << "," << k.active_banks << "," << k.items_per_bank_mean << ","
+        << k.items_per_bank_p95 << "," << k.items_per_bank_max << ","
+        << k.bank_imbalance << "," << k.bank_collision_ratio << ","
+        << r.q_broadcast_bytes << "," << r.score_traffic_bytes << ","
         << r.p_return_traffic_bytes << "," << r.message_reduce_traffic_bytes
         << "," << r.local_combine_buffer_max_bytes << ","
         << r.pc_reducer_buffer_max_bytes << "," << r.gnn_score_cycles << ","
@@ -1921,6 +1970,30 @@ double MeanPlacementField(const std::vector<const QueryResult*>& group,
                          });
 }
 
+double MeanKVPlacementField(const std::vector<const QueryResult*>& group,
+                            double KVPlacementDiagnosis::*field) {
+  return MeanResultValue(group,
+                         [field](const QueryResult& result) {
+                           return result.kv_placement_diagnosis.*field;
+                         });
+}
+
+std::pair<int, double> DominantResultIntField(
+    const std::vector<const QueryResult*>& group, int QueryResult::*field) {
+  std::map<int, int> counts;
+  for (const auto* result : group) {
+    counts[result->*field]++;
+  }
+  std::pair<int, int> dominant{-1, 0};
+  for (const auto& item : counts) {
+    if (item.second > dominant.second) {
+      dominant = item;
+    }
+  }
+  return {dominant.first,
+          group.empty() ? 0.0 : 1.0 * dominant.second / group.size()};
+}
+
 std::pair<std::string, double> DominantBottleneck(
     const std::vector<const QueryResult*>& group) {
   std::map<std::string, int> counts;
@@ -1947,6 +2020,11 @@ void WriteAggregateCSV(const std::string& path,
   }
   csv << "workload,placement,baseline,memory_token_tile,num_queries,"
          "mean_latency_ns,p50_latency_ns,p95_latency_ns,selected_kv_count,"
+         "selected_kv_active_banks,selected_kv_items_per_bank_mean,"
+         "selected_kv_items_per_bank_p95,selected_kv_items_per_bank_max,"
+         "selected_kv_bank_imbalance,selected_kv_bank_collision_ratio,"
+         "dominant_cached_kv_bottleneck_bank,"
+         "cached_kv_bottleneck_bank_query_fraction,"
          "q_broadcast_bytes,score_traffic_bytes,p_return_traffic_bytes,"
          "message_reduce_traffic_bytes,local_combine_buffer_max_bytes,"
          "pc_reducer_buffer_max_bytes,active_banks,active_pseudo_channels,"
@@ -2061,10 +2139,31 @@ void WriteAggregateCSV(const std::string& path,
                 r->diagnosis.message_traffic_after_local_combine);
           }
           const auto dominant_bottleneck = DominantBottleneck(group);
+          const auto dominant_cached_kv_bank = DominantResultIntField(
+              group, &QueryResult::cached_kv_bottleneck_bank);
           csv << workload.name << "," << placement << "," << baseline << ","
               << tile << "," << group.size() << "," << Mean(latency) << ","
               << Percentile(latency, 0.50) << ","
               << Percentile(latency, 0.95) << "," << Mean(selected) << ","
+              << MeanKVPlacementField(
+                     group, &KVPlacementDiagnosis::active_banks)
+              << ","
+              << MeanKVPlacementField(
+                     group, &KVPlacementDiagnosis::items_per_bank_mean)
+              << ","
+              << MeanKVPlacementField(
+                     group, &KVPlacementDiagnosis::items_per_bank_p95)
+              << ","
+              << MeanKVPlacementField(
+                     group, &KVPlacementDiagnosis::items_per_bank_max)
+              << ","
+              << MeanKVPlacementField(
+                     group, &KVPlacementDiagnosis::bank_imbalance)
+              << ","
+              << MeanKVPlacementField(
+                     group, &KVPlacementDiagnosis::bank_collision_ratio)
+              << "," << dominant_cached_kv_bank.first << ","
+              << dominant_cached_kv_bank.second << ","
               << Mean(q_broadcast) << "," << Mean(score_traffic) << ","
               << Mean(p_return) << "," << Mean(message_reduce) << ","
               << Mean(local_buffer) << "," << Mean(pc_buffer) << ","
