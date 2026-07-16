@@ -171,6 +171,44 @@ share, raw LUT/scale composition, hidden fraction, local-combine gain, and
 bottleneck stage/share. These are uncalibrated sensitivity points; the grid
 does not select a hardware configuration or evaluate test traces.
 
+The next analysis maps local-combine break-even conditions:
+
+```bash
+python3 ../tools/run_patch6_local_combine_break_even.py \
+  --binary ./analytical_pim \
+  --config ./analytical_pim_patch6_config.yaml \
+  --output-directory ../data/patch6_local_break_even \
+  | tee patch6_local_break_even.log
+```
+
+Three explicitly uncalibrated cached-KV anchors are evaluated:
+
+```text
+conservative_serial  = LUT 2,   scale 2,    overlap 0
+reference_serial     = LUT 1,   scale 1,    overlap 0
+optimistic_pipelined = LUT 0.5, scale 0.25, overlap 1
+```
+
+For each anchor, the default grid sweeps VADD cycles/group over
+`{0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 4}` and bank-to-PC bandwidth over
+`{8, 16, 32, 64, 128}` bytes/cycle/bank. The 120 points produce 600
+per-workload rows. Linear interpolation between the nearest winning and losing
+VADD points estimates a break-even threshold for every
+`anchor x workload x bandwidth` group. The runner also verifies that cached-KV
+anchors do not change the absolute local/no-local saving; anchors only change
+its relative importance in total latency.
+
+The interpolation criterion is equality of local and no-local mean latency over
+the selected validation queries. Both paths' p95 latency remains available in
+the grid CSV but is not used to define the threshold.
+
+Within each cached-KV anchor, `VADD=1` and bank-to-PC bandwidth `32` define the
+latency reference. Custom sweeps must retain that point.
+
+The output includes the grid manifest, overall and per-workload metrics, raw
+scenario files, and `patch6_local_combine_break_even.csv` with 90 threshold
+rows. Test traces remain excluded.
+
 Every parameter is labeled `uncalibrated_assumption`. These sweeps measure
 model sensitivity and bottleneck transitions; they are not hardware
 calibration evidence. Test results remain frozen from Patch 5, and Patch 6 does

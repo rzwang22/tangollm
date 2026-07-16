@@ -21,6 +21,9 @@ TASK_DIRECTORY = "fixture_task_formal_v1"
 FINAL_ANALYZER = REPOSITORY_ROOT / "tools/analyze_gofa_trace_final.py"
 PATCH6_RUNNER = REPOSITORY_ROOT / "tools/run_patch6_sensitivity.py"
 PATCH6_CACHED_KV_GRID = REPOSITORY_ROOT / "tools/run_patch6_cached_kv_grid.py"
+PATCH6_LOCAL_BREAK_EVEN = (
+    REPOSITORY_ROOT / "tools/run_patch6_local_combine_break_even.py"
+)
 
 
 def write_config(directory: Path, trace_root: Path) -> Path:
@@ -805,6 +808,132 @@ def check_patch6_run(binary: Path) -> None:
         assert missing_reference.returncode != 0
         assert "grid must contain the reference point" in missing_reference.stdout
 
+        break_even_directory = directory / "local_combine_break_even"
+        break_even_completed = subprocess.run(
+            [
+                sys.executable,
+                str(PATCH6_LOCAL_BREAK_EVEN),
+                "--binary",
+                str(binary),
+                "--config",
+                str(config),
+                "--output-directory",
+                str(break_even_directory),
+                "--expected-workloads",
+                "fixture_task",
+                "--expected-queries-per-workload",
+                "1",
+                "--vadd-cycles",
+                "0.5,1,2",
+                "--bank-to-pc-bandwidths",
+                "16,32,64",
+            ],
+            cwd=REPOSITORY_ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        assert break_even_completed.returncode == 0, break_even_completed.stdout
+        assert "No test rows were simulated or reported" in break_even_completed.stdout
+        assert "anchor_invariance_max_error_ns=0.000000" in break_even_completed.stdout
+        break_even_overall = load_rows(
+            break_even_directory / "patch6_local_combine_grid_overall.csv"
+        )
+        break_even_workload = load_rows(
+            break_even_directory / "patch6_local_combine_grid_by_workload.csv"
+        )
+        break_even_manifest = load_rows(
+            break_even_directory / "patch6_local_combine_grid_manifest.csv"
+        )
+        break_even_rows = load_rows(
+            break_even_directory / "patch6_local_combine_break_even.csv"
+        )
+        assert len(break_even_overall) == 27
+        assert len(break_even_workload) == 27
+        assert len(break_even_manifest) == 27
+        assert len(break_even_rows) == 18
+        assert {row["cached_kv_anchor"] for row in break_even_overall} == {
+            "conservative_serial",
+            "reference_serial",
+            "optimistic_pipelined",
+        }
+        assert {
+            float(row["grid_vadd_group_cycles"]) for row in break_even_overall
+        } == {0.5, 1.0, 2.0}
+        assert {
+            float(
+                row["grid_bank_to_pc_bandwidth_bytes_per_cycle_per_bank"]
+            )
+            for row in break_even_overall
+        } == {16.0, 32.0, 64.0}
+        anchor_references = [
+            row
+            for row in break_even_overall
+            if row["is_anchor_reference_point"] == "1"
+        ]
+        assert len(anchor_references) == 3
+        assert all(
+            float(row["latency_change_vs_anchor_reference"]) == 0.0
+            for row in anchor_references
+        )
+
+        sys.path.insert(0, str(REPOSITORY_ROOT / "tools"))
+        from run_patch6_local_combine_break_even import estimate_break_even
+
+        synthetic_crossing = estimate_break_even(
+            [
+                {
+                    "grid_vadd_group_cycles": 0.5,
+                    "local_absolute_savings_ns": 1.0,
+                },
+                {
+                    "grid_vadd_group_cycles": 1.0,
+                    "local_absolute_savings_ns": 0.5,
+                },
+                {
+                    "grid_vadd_group_cycles": 2.0,
+                    "local_absolute_savings_ns": -0.5,
+                },
+            ],
+            "fixture_anchor",
+            "fixture_workload",
+            32.0,
+        )
+        assert synthetic_crossing["status"] == "interpolated"
+        assert synthetic_crossing["break_even_vadd_group_cycles"] == 1.5
+
+        missing_anchor_reference = subprocess.run(
+            [
+                sys.executable,
+                str(PATCH6_LOCAL_BREAK_EVEN),
+                "--binary",
+                str(binary),
+                "--config",
+                str(config),
+                "--output-directory",
+                str(directory / "missing_anchor_reference"),
+                "--expected-workloads",
+                "fixture_task",
+                "--expected-queries-per-workload",
+                "1",
+                "--vadd-cycles",
+                "0.5,2",
+                "--bank-to-pc-bandwidths",
+                "16,32,64",
+            ],
+            cwd=REPOSITORY_ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        assert missing_anchor_reference.returncode != 0
+        assert (
+            "grid must contain the anchor reference"
+            in missing_anchor_reference.stdout
+        )
+
 
 def main() -> None:
     parser = argparse.ArgumentParser()
@@ -816,7 +945,7 @@ def main() -> None:
     check_valid_run(binary)
     check_negative_cases(binary)
     check_patch6_run(binary)
-    print("Patch 5/6 analytical tests passed: valid=8, negative=11")
+    print("Patch 5/6 analytical tests passed: valid=9, negative=12")
 
 
 if __name__ == "__main__":
