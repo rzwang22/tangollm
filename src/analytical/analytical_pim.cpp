@@ -68,6 +68,8 @@ struct PEConfig {
   double p8v2_lut_group_cycles = 1.0;
   double vadd_group_cycles = 1.0;
   double scale_group_cycles = 1.0;
+  double gnn_scale_group_cycles = 1.0;
+  double cached_kv_scale_group_cycles = 1.0;
   double softmax_group_cycles = 1.0;
   double scheduling_overhead_per_tile_cycles = 16.0;
 
@@ -137,6 +139,7 @@ struct WorkloadSuiteConfig {
 
 struct TraceWorkloadConfig {
   GOFATraceLoadConfig loader;
+  std::vector<std::string> simulation_splits;
 };
 
 struct HybridPlacementConfig {
@@ -611,6 +614,10 @@ SimulationConfig LoadConfig(const std::string& config_path) {
       ReadScalar<double>(pe, "vadd_group_cycles", 1.0);
   config.pe.scale_group_cycles =
       ReadScalar<double>(pe, "scale_group_cycles", 1.0);
+  config.pe.gnn_scale_group_cycles = ReadScalar<double>(
+      pe, "gnn_scale_group_cycles", config.pe.scale_group_cycles);
+  config.pe.cached_kv_scale_group_cycles = ReadScalar<double>(
+      pe, "cached_kv_scale_group_cycles", config.pe.scale_group_cycles);
   config.pe.softmax_group_cycles =
       ReadScalar<double>(pe, "softmax_group_cycles", 1.0);
   config.pe.scheduling_overhead_per_tile_cycles =
@@ -699,6 +706,11 @@ SimulationConfig LoadConfig(const std::string& config_path) {
   config.trace.loader.splits = ReadStringVector(trace["splits"]);
   if (config.trace.loader.splits.empty()) {
     config.trace.loader.splits = {"validation", "test"};
+  }
+  config.trace.simulation_splits =
+      ReadStringVector(trace["simulation_splits"]);
+  if (config.trace.simulation_splits.empty()) {
+    config.trace.simulation_splits = config.trace.loader.splits;
   }
   config.trace.loader.expected_queries_per_split =
       ReadScalar<int>(trace, "expected_queries_per_split", 100);
@@ -835,6 +847,16 @@ SimulationConfig LoadConfig(const std::string& config_path) {
       config.model.memory_tokens <= 0 || config.model.gnn_heads <= 0 ||
       config.model.head_dim <= 0 || config.tile.channel_group <= 0 ||
       config.tile.head_tile <= 0 ||
+      config.pe.q8k8_group_cycles <= 0.0 ||
+      config.pe.p8v8_group_cycles <= 0.0 ||
+      config.pe.q8k2_lut_group_cycles <= 0.0 ||
+      config.pe.p8v2_lut_group_cycles <= 0.0 ||
+      config.pe.vadd_group_cycles <= 0.0 ||
+      config.pe.gnn_scale_group_cycles <= 0.0 ||
+      config.pe.cached_kv_scale_group_cycles <= 0.0 ||
+      config.pe.softmax_group_cycles <= 0.0 ||
+      config.pe.scheduling_overhead_per_tile_cycles < 0.0 ||
+      config.pe.clock_ns <= 0.0 ||
       config.local_buffer.resident_head_tiles <= 0 ||
       config.local_buffer.concurrent_destinations_per_bank <= 0 ||
       config.local_buffer.capacity_bytes_per_bank <= 0.0 ||
@@ -887,6 +909,21 @@ SimulationConfig LoadConfig(const std::string& config_path) {
       throw std::runtime_error("Invalid trace workload task config");
     }
   }
+  std::set<std::string> simulation_splits;
+  for (const auto& split : config.trace.simulation_splits) {
+    if (split != "validation" && split != "test") {
+      throw std::runtime_error("Unknown trace simulation split: " + split);
+    }
+    if (std::find(config.trace.loader.splits.begin(),
+                  config.trace.loader.splits.end(), split) ==
+        config.trace.loader.splits.end()) {
+      throw std::runtime_error("Trace simulation split was not loaded: " +
+                               split);
+    }
+    if (!simulation_splits.insert(split).second) {
+      throw std::runtime_error("Duplicate trace simulation split: " + split);
+    }
+  }
   for (const auto& placement : config.kv_placements) {
     if (placement != kKVPlacementLegacy && placement != kKVPlacementHash &&
         placement != kKVPlacementBalanced) {
@@ -900,6 +937,79 @@ SimulationConfig LoadConfig(const std::string& config_path) {
         "trace workload cannot use legacy_graph_coupled KV placement");
   }
   return config;
+}
+
+double ParsePositiveOverride(const std::string& key,
+                             const std::string& value) {
+  size_t parsed = 0;
+  double result = 0.0;
+  try {
+    result = std::stod(value, &parsed);
+  } catch (const std::exception&) {
+    throw std::runtime_error("Invalid numeric override " + key + "=" +
+                             value);
+  }
+  if (parsed != value.size() || !std::isfinite(result) || result <= 0.0) {
+    throw std::runtime_error("Override must be a positive finite number: " +
+                             key + "=" + value);
+  }
+  return result;
+}
+
+void ApplyConfigOverrides(SimulationConfig& config,
+                          const std::vector<std::string>& overrides) {
+  std::map<std::string, double*> numeric_fields = {
+      {"near_bank_pe.q8k8_group_cycles", &config.pe.q8k8_group_cycles},
+      {"near_bank_pe.p8v8_group_cycles", &config.pe.p8v8_group_cycles},
+      {"near_bank_pe.q8k2_lut_group_cycles",
+       &config.pe.q8k2_lut_group_cycles},
+      {"near_bank_pe.p8v2_lut_group_cycles",
+       &config.pe.p8v2_lut_group_cycles},
+      {"near_bank_pe.vadd_group_cycles", &config.pe.vadd_group_cycles},
+      {"near_bank_pe.gnn_scale_group_cycles",
+       &config.pe.gnn_scale_group_cycles},
+      {"near_bank_pe.cached_kv_scale_group_cycles",
+       &config.pe.cached_kv_scale_group_cycles},
+      {"communication.q_broadcast_bandwidth_bytes_per_cycle_per_bank",
+       &config.communication
+            .q_broadcast_bandwidth_bytes_per_cycle_per_bank},
+      {"communication.bank_to_pc_bandwidth_bytes_per_cycle_per_bank",
+       &config.communication
+            .bank_to_pc_bandwidth_bytes_per_cycle_per_bank},
+      {"communication.pc_to_global_bandwidth_bytes_per_cycle_per_pc",
+       &config.communication
+            .pc_to_global_bandwidth_bytes_per_cycle_per_pc},
+      {"communication.global_to_npu_bandwidth_bytes_per_cycle",
+       &config.communication.global_to_npu_bandwidth_bytes_per_cycle},
+      {"reducer.pc_throughput_groups_per_cycle_per_lane",
+       &config.reducer.pc_throughput_groups_per_cycle_per_lane},
+      {"reducer.pc_input_bandwidth_bytes_per_cycle",
+       &config.reducer.pc_input_bandwidth_bytes_per_cycle},
+      {"reducer.global_throughput_groups_per_cycle_per_lane",
+       &config.reducer.global_throughput_groups_per_cycle_per_lane},
+      {"reducer.global_input_bandwidth_bytes_per_cycle",
+       &config.reducer.global_input_bandwidth_bytes_per_cycle},
+  };
+  for (const auto& override_value : overrides) {
+    const size_t separator = override_value.find('=');
+    if (separator == std::string::npos || separator == 0 ||
+        separator + 1 == override_value.size()) {
+      throw std::runtime_error("Override must use key=value: " +
+                               override_value);
+    }
+    const std::string key = override_value.substr(0, separator);
+    const std::string value = override_value.substr(separator + 1);
+    const auto numeric = numeric_fields.find(key);
+    if (numeric != numeric_fields.end()) {
+      *numeric->second = ParsePositiveOverride(key, value);
+    } else if (key == "output.per_query_csv") {
+      config.output.per_query_csv = value;
+    } else if (key == "output.aggregate_csv") {
+      config.output.aggregate_csv = value;
+    } else {
+      throw std::runtime_error("Unsupported analytical PIM override: " + key);
+    }
+  }
 }
 
 void PrintSanityCheck(const SimulationConfig& config) {
@@ -929,6 +1039,14 @@ void PrintSanityCheck(const SimulationConfig& config) {
             << config.local_buffer.concurrent_destinations_per_bank
             << ", capacity_bytes_per_bank="
             << config.local_buffer.capacity_bytes_per_bank << "\n";
+  std::cout << "pe_group_cycles: q8k8=" << config.pe.q8k8_group_cycles
+            << ", p8v8=" << config.pe.p8v8_group_cycles
+            << ", q8k2_lut=" << config.pe.q8k2_lut_group_cycles
+            << ", p8v2_lut=" << config.pe.p8v2_lut_group_cycles
+            << ", vadd=" << config.pe.vadd_group_cycles
+            << ", gnn_scale=" << config.pe.gnn_scale_group_cycles
+            << ", cached_kv_scale="
+            << config.pe.cached_kv_scale_group_cycles << "\n";
   std::cout << "hybrid_placement: hot_dst_degree_threshold="
             << config.hybrid.hot_dst_degree_threshold
             << ", target_edges_per_bank="
@@ -966,6 +1084,8 @@ void PrintSanityCheck(const SimulationConfig& config) {
     std::cout << ", trace_root=" << config.trace.loader.root
               << ", tasks=" << config.trace.loader.tasks.size()
               << ", splits=" << config.trace.loader.splits.size()
+              << ", simulation_splits="
+              << config.trace.simulation_splits.size()
               << ", selection_policy="
               << config.trace.loader.expected_selection_policy;
   }
@@ -1345,11 +1465,26 @@ std::vector<QuerySample> GenerateQueries(const SimulationConfig& config) {
     GOFATraceLoadResult traces = LoadAndValidateGOFATraces(config.trace.loader);
     queries.reserve(traces.queries.size());
     for (const auto& trace : traces.queries) {
-      queries.push_back(ConvertTraceQuery(config, trace));
+      if (std::find(config.trace.simulation_splits.begin(),
+                    config.trace.simulation_splits.end(), trace.split) !=
+          config.trace.simulation_splits.end()) {
+        queries.push_back(ConvertTraceQuery(config, trace));
+      }
     }
-    std::cout << "GOFA trace validation passed: queries=" << queries.size()
+    std::cout << "GOFA trace validation passed: queries="
+              << traces.queries.size()
               << ", validation=" << traces.validation_query_count
               << ", test=" << traces.test_query_count << "\n";
+    std::cout << "Trace simulation selection: queries=" << queries.size()
+              << ", splits=";
+    for (size_t index = 0; index < config.trace.simulation_splits.size();
+         ++index) {
+      if (index != 0) {
+        std::cout << "+";
+      }
+      std::cout << config.trace.simulation_splits[index];
+    }
+    std::cout << "\n";
     return queries;
   }
   for (const auto& workload : config.suite.workloads) {
@@ -2061,30 +2196,33 @@ QueryResult SimulateQuery(const SimulationConfig& config,
     const double bank_pv_groups = kv_bank_placement.pv_groups[bank];
     const double bank_score_cycles =
         bank_score_groups *
-        (config.pe.q8k8_group_cycles + config.pe.scale_group_cycles) /
+        (config.pe.q8k8_group_cycles + config.pe.gnn_scale_group_cycles) /
         config.topology.pe_per_bank;
     const double bank_message_cycles =
         (bank_message_groups *
-             (config.pe.p8v8_group_cycles + config.pe.scale_group_cycles) +
+             (config.pe.p8v8_group_cycles +
+              config.pe.gnn_scale_group_cycles) +
          bank_local_vadd_operation_groups * config.pe.vadd_group_cycles) /
         config.topology.pe_per_bank;
     const double bank_kv_cycles =
         (bank_qk_groups *
-             (config.pe.q8k2_lut_group_cycles + config.pe.scale_group_cycles) +
+             (config.pe.q8k2_lut_group_cycles +
+              config.pe.cached_kv_scale_group_cycles) +
          bank_pv_groups *
-             (config.pe.p8v2_lut_group_cycles + config.pe.scale_group_cycles)) /
+             (config.pe.p8v2_lut_group_cycles +
+              config.pe.cached_kv_scale_group_cycles)) /
         config.topology.pe_per_bank;
     const double bank_q8k8_vdot_cycles =
         bank_score_groups * config.pe.q8k8_group_cycles /
         config.topology.pe_per_bank;
     const double bank_score_scale_cycles =
-        bank_score_groups * config.pe.scale_group_cycles /
+        bank_score_groups * config.pe.gnn_scale_group_cycles /
         config.topology.pe_per_bank;
     const double bank_p8v8_vmul_cycles =
         bank_message_groups * config.pe.p8v8_group_cycles /
         config.topology.pe_per_bank;
     const double bank_message_scale_cycles =
-        bank_message_groups * config.pe.scale_group_cycles /
+        bank_message_groups * config.pe.gnn_scale_group_cycles /
         config.topology.pe_per_bank;
     const double bank_local_vadd_cycles = bank_local_vadd_operation_groups *
                                           config.pe.vadd_group_cycles /
@@ -2096,7 +2234,7 @@ QueryResult SimulateQuery(const SimulationConfig& config,
                                         config.pe.p8v2_lut_group_cycles /
                                         config.topology.pe_per_bank;
     const double bank_kv_scale_cycles = (bank_qk_groups + bank_pv_groups) *
-                                        config.pe.scale_group_cycles /
+                                        config.pe.cached_kv_scale_group_cycles /
                                         config.topology.pe_per_bank;
     if (bank_score_cycles > score_cycles) {
       result.score_bottleneck_bank = bank;
@@ -2771,7 +2909,7 @@ void WriteAggregateCSV(const std::string& path,
          "mean_global_reducer_output_groups\n";
   csv << std::fixed << std::setprecision(6);
   const std::vector<std::string> splits =
-      config.workload_mode == "trace" ? config.trace.loader.splits
+      config.workload_mode == "trace" ? config.trace.simulation_splits
                                       : std::vector<std::string>{"synthetic"};
   for (const auto& workload : config.suite.workloads) {
     for (const auto& split : splits) {
@@ -3204,7 +3342,12 @@ void WriteAggregateCSV(const std::string& path,
 
 void PrintSummary(const SimulationConfig& config,
                   const std::vector<QueryResult>& results) {
-  std::cout << "Analytical PIM Patch 5 trace-driven run\n";
+  const bool validation_only =
+      config.workload_mode == "trace" &&
+      config.trace.simulation_splits != config.trace.loader.splits;
+  std::cout << (validation_only
+                    ? "Analytical PIM Patch 6 validation-only run\n"
+                    : "Analytical PIM Patch 5 trace-driven run\n");
   const size_t result_multiplier =
       config.placements.size() * config.kv_placements.size() *
       config.baselines.size() * config.tile.memory_token_tiles.size();
@@ -3216,7 +3359,7 @@ void PrintSummary(const SimulationConfig& config,
             << ", baselines=" << config.baselines.size()
             << ", queries=" << query_count << "\n";
   const std::vector<std::string> splits =
-      config.workload_mode == "trace" ? config.trace.loader.splits
+      config.workload_mode == "trace" ? config.trace.simulation_splits
                                       : std::vector<std::string>{"synthetic"};
   for (const auto& workload : config.suite.workloads) {
     for (const auto& split : splits) {
@@ -3272,9 +3415,18 @@ void PrintSummary(const SimulationConfig& config,
 
 }  // namespace
 
-int RunAnalyticalPIM(const std::string& config_path) {
+int RunAnalyticalPIM(const std::string& config_path,
+                     const std::vector<std::string>& overrides) {
   try {
     SimulationConfig config = LoadConfig(config_path);
+    ApplyConfigOverrides(config, overrides);
+    if (!overrides.empty()) {
+      std::cout << "Applied config overrides:";
+      for (const auto& value : overrides) {
+        std::cout << " " << value;
+      }
+      std::cout << "\n";
+    }
     PrintSanityCheck(config);
     std::vector<QuerySample> base_queries = GenerateQueries(config);
     std::vector<QueryResult> results;

@@ -7,7 +7,8 @@
 namespace llm_system {
 namespace analytical {
 
-int RunAnalyticalPIM(const std::string& config_path);
+int RunAnalyticalPIM(const std::string& config_path,
+                     const std::vector<std::string>& overrides = {});
 
 }  // namespace analytical
 }  // namespace llm_system

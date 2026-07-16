@@ -19,6 +19,7 @@ FIXTURE_ROOT = REPOSITORY_ROOT / "tests/fixtures/gofa_trace_v1"
 CONFIG_TEMPLATE = REPOSITORY_ROOT / "tests/analytical_pim_trace_fixture_config.yaml"
 TASK_DIRECTORY = "fixture_task_formal_v1"
 FINAL_ANALYZER = REPOSITORY_ROOT / "tools/analyze_gofa_trace_final.py"
+PATCH6_RUNNER = REPOSITORY_ROOT / "tools/run_patch6_sensitivity.py"
 
 
 def write_config(directory: Path, trace_root: Path) -> Path:
@@ -39,9 +40,14 @@ def write_config(directory: Path, trace_root: Path) -> Path:
     return config_path
 
 
-def run_simulator(binary: Path, config: Path) -> subprocess.CompletedProcess[str]:
+def run_simulator(
+    binary: Path, config: Path, overrides: tuple[str, ...] = ()
+) -> subprocess.CompletedProcess[str]:
+    command = [str(binary), str(config)]
+    for override in overrides:
+        command.extend(("--set", override))
     return subprocess.run(
-        [str(binary), str(config)],
+        command,
         cwd=REPOSITORY_ROOT,
         text=True,
         stdout=subprocess.PIPE,
@@ -467,6 +473,132 @@ def check_negative_cases(binary: Path) -> None:
         expect_validation_failure(binary, name, mutation, expected_message)
 
 
+def check_patch6_run(binary: Path) -> None:
+    with tempfile.TemporaryDirectory(prefix="patch6-valid-") as temporary:
+        directory = Path(temporary)
+        config = write_config(directory, FIXTURE_ROOT)
+        config.write_text(
+            config.read_text()
+            .replace(
+                "splits: [validation, test]",
+                "splits: [validation, test]\n  simulation_splits: [validation]",
+            )
+            .replace(
+                "scale_group_cycles: 1",
+                "scale_group_cycles: 1\n"
+                "  gnn_scale_group_cycles: 1\n"
+                "  cached_kv_scale_group_cycles: 1",
+            )
+            .replace("memory_token_tiles: [1, 4]", "memory_token_tiles: [4]")
+            .replace(
+                "graph_compute_placement_sweep: [hash, hybrid_locality_balanced]",
+                "graph_compute_placement_sweep: [source_dst_locality]",
+            )
+            .replace(
+                "kv_storage_placement_sweep: [hash, balanced]",
+                "kv_storage_placement_sweep: [balanced]",
+            )
+        )
+
+        base_completed = run_simulator(binary, config)
+        assert base_completed.returncode == 0, base_completed.stdout
+        assert "Trace simulation selection: queries=1, splits=validation" in base_completed.stdout
+        base_rows = load_rows(directory / "per_query.csv")
+        base_aggregate = load_rows(directory / "aggregate.csv")
+        assert len(base_rows) == 2
+        assert len(base_aggregate) == 2
+        assert {row["split"] for row in base_rows} == {"validation"}
+        base_local = next(
+            row
+            for row in base_rows
+            if row["baseline"] == "pim_selective_kv_local_combine"
+        )
+
+        slow_completed = run_simulator(
+            binary,
+            config,
+            ("near_bank_pe.cached_kv_scale_group_cycles=2",),
+        )
+        assert slow_completed.returncode == 0, slow_completed.stdout
+        slow_rows = load_rows(directory / "per_query.csv")
+        slow_local = next(
+            row
+            for row in slow_rows
+            if row["baseline"] == "pim_selective_kv_local_combine"
+        )
+        assert_close(
+            slow_local["cached_kv_scale_cycles"],
+            2 * float(base_local["cached_kv_scale_cycles"]),
+        )
+        assert_close(
+            slow_local["gnn_score_scale_cycles"],
+            float(base_local["gnn_score_scale_cycles"]),
+        )
+        assert_close(
+            slow_local["gnn_value_scale_cycles"],
+            float(base_local["gnn_value_scale_cycles"]),
+        )
+
+        invalid_completed = run_simulator(
+            binary, config, ("near_bank_pe.not_a_parameter=1",)
+        )
+        assert invalid_completed.returncode != 0
+        assert "Unsupported analytical PIM override" in invalid_completed.stdout
+        zero_completed = run_simulator(
+            binary, config, ("near_bank_pe.cached_kv_scale_group_cycles=0",)
+        )
+        assert zero_completed.returncode != 0
+        assert "positive finite number" in zero_completed.stdout
+
+        sensitivity_directory = directory / "sensitivity"
+        sensitivity_completed = subprocess.run(
+            [
+                sys.executable,
+                str(PATCH6_RUNNER),
+                "--binary",
+                str(binary),
+                "--config",
+                str(config),
+                "--output-directory",
+                str(sensitivity_directory),
+                "--expected-workloads",
+                "fixture_task",
+                "--expected-queries-per-workload",
+                "1",
+            ],
+            cwd=REPOSITORY_ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        assert sensitivity_completed.returncode == 0, sensitivity_completed.stdout
+        assert "No test rows were simulated or reported" in sensitivity_completed.stdout
+        overall = load_rows(
+            sensitivity_directory / "patch6_sensitivity_overall.csv"
+        )
+        by_scenario = {row["scenario"]: row for row in overall}
+        assert len(overall) == 15
+        assert float(by_scenario["cached_scale_fast"]["mean_latency_ns"]) < float(
+            by_scenario["base"]["mean_latency_ns"]
+        )
+        assert float(by_scenario["cached_scale_slow"]["mean_latency_ns"]) > float(
+            by_scenario["base"]["mean_latency_ns"]
+        )
+        assert float(by_scenario["optimistic_joint"]["mean_latency_ns"]) < float(
+            by_scenario["base"]["mean_latency_ns"]
+        )
+        assert float(by_scenario["conservative_joint"]["mean_latency_ns"]) > float(
+            by_scenario["base"]["mean_latency_ns"]
+        )
+        assert len(
+            load_rows(sensitivity_directory / "patch6_sensitivity_by_workload.csv")
+        ) == 15
+        assert len(
+            load_rows(sensitivity_directory / "patch6_parameter_manifest.csv")
+        ) == 15
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", type=Path, required=True)
@@ -476,7 +608,8 @@ def main() -> None:
         raise SystemExit(f"Missing analytical_pim binary: {binary}")
     check_valid_run(binary)
     check_negative_cases(binary)
-    print("Patch 5 trace/final-analysis tests passed: valid=3, negative=7")
+    check_patch6_run(binary)
+    print("Patch 5/6 analytical tests passed: valid=6, negative=9")
 
 
 if __name__ == "__main__":

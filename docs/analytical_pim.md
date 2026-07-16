@@ -63,6 +63,70 @@ bottleneck. The `__all__` row computes exact percentiles over all 500 test
 queries rather than averaging per-workload percentiles. The report is a
 PIM-internal comparison and must not be presented as PIM/H100 speedup.
 
+## Patch 6 Calibration Envelope
+
+Patch 6 performs validation-only sensitivity analysis around the frozen Patch
+5 design. `analytical_pim_patch6_config.yaml` still loads and validates all
+1,000 formal traces, but this field prevents test queries from entering the
+simulation or any sensitivity CSV:
+
+```yaml
+trace_workload:
+  splits: [validation, test]
+  simulation_splits: [validation]
+```
+
+The legacy `scale_group_cycles` remains the fallback for compatibility. Patch
+6 separates its two architectural uses so cached-KV dequantization can be
+varied without changing GNN score/value scaling:
+
+```yaml
+near_bank_pe:
+  scale_group_cycles: 1
+  gnn_scale_group_cycles: 1
+  cached_kv_scale_group_cycles: 1
+```
+
+The executable accepts a strict whitelist of runtime overrides. This avoids
+rewriting YAML with string substitutions and rejects unknown or non-positive
+parameters:
+
+```bash
+./analytical_pim analytical_pim_patch6_config.yaml \
+  --set near_bank_pe.cached_kv_scale_group_cycles=2 \
+  --set output.per_query_csv=/tmp/patch6_per_query.csv \
+  --set output.aggregate_csv=/tmp/patch6_aggregate.csv
+```
+
+Run the complete Patch 6 envelope from the build directory:
+
+```bash
+python3 ../tools/run_patch6_sensitivity.py \
+  --binary ./analytical_pim \
+  --config ./analytical_pim_patch6_config.yaml \
+  --output-directory ../data/patch6 \
+  | tee patch6_sensitivity.log
+```
+
+The 15 scenarios include the base point, fast/slow single-factor sweeps for
+cached-KV scale, INT2 LUT, GNN pipeline, VADD, communication, and reducer, plus
+optimistic/conservative joint envelopes. Cycle costs use `0.5x/1x/2x` and
+bandwidth or throughput uses `2x/1x/0.5x` for
+optimistic/base/conservative assumptions.
+
+Patch 6 writes:
+
+- `patch6_parameter_manifest.csv`: parameter units, envelopes, and calibration
+  status;
+- `patch6_sensitivity_by_workload.csv`: 75 scenario/workload rows;
+- `patch6_sensitivity_overall.csv`: 15 exact 500-query summaries;
+- `raw/`: per-scenario simulator CSV and logs.
+
+Every parameter is labeled `uncalibrated_assumption`. These sweeps measure
+model sensitivity and bottleneck transitions; they are not hardware
+calibration evidence. Test results remain frozen from Patch 5, and Patch 6 does
+not compute PIM/H100 speedup or use Ramulator.
+
 For formal traces, the simulator directly consumes:
 
 - sampled graph structure and NOG metadata;
