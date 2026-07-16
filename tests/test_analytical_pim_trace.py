@@ -80,8 +80,8 @@ def check_valid_run(binary: Path) -> None:
         aggregate = load_rows(directory / "aggregate.csv")
         assert len(per_query) == 32
         assert len(aggregate) == 32
-        assert len(per_query[0]) == 189
-        assert len(aggregate[0]) == 174
+        assert len(per_query[0]) == 194
+        assert len(aggregate[0]) == 179
         assert all(
             None not in row and all(value is not None for value in row.values())
             for row in per_query
@@ -146,6 +146,11 @@ def check_valid_run(binary: Path) -> None:
             "cached_kv_critical_scale_cycles",
             "cached_kv_unoverlapped_cycles",
             "cached_kv_overlap_hidden_cycles",
+            "cached_kv_raw_lut_fraction",
+            "cached_kv_raw_scale_fraction",
+            "cached_kv_overlap_hidden_fraction",
+            "cached_kv_pipeline_compute_fraction",
+            "cached_kv_pipeline_critical_path_fraction",
         }
         assert required_columns <= set(per_query[0])
 
@@ -521,6 +526,9 @@ def check_patch6_run(binary: Path) -> None:
         )
         assert_close(base_local["cached_kv_lut_scale_overlap"], 0)
         assert_close(base_local["cached_kv_overlap_hidden_cycles"], 0)
+        assert_close(base_local["cached_kv_raw_lut_fraction"], 0.5)
+        assert_close(base_local["cached_kv_raw_scale_fraction"], 0.5)
+        assert_close(base_local["cached_kv_overlap_hidden_fraction"], 0)
         assert_close(
             base_local["cached_kv_unoverlapped_cycles"],
             float(base_local["cached_kv_cycles"]),
@@ -529,6 +537,16 @@ def check_patch6_run(binary: Path) -> None:
             base_local["cached_kv_unoverlapped_cycles"],
             float(base_local["cached_kv_critical_lut_cycles"])
             + float(base_local["cached_kv_critical_scale_cycles"]),
+        )
+        assert_close(
+            base_local["cached_kv_pipeline_compute_fraction"],
+            float(base_local["cached_kv_cycles"])
+            / float(base_local["compute_cycles"]),
+        )
+        assert_close(
+            base_local["cached_kv_pipeline_critical_path_fraction"],
+            float(base_local["cached_kv_cycles"])
+            / float(base_local["total_cycles"]),
         )
 
         overlap_completed = run_simulator(
@@ -554,6 +572,9 @@ def check_patch6_run(binary: Path) -> None:
         assert_close(
             overlap_local["cached_kv_overlap_hidden_cycles"], expected_hidden
         )
+        assert_close(overlap_local["cached_kv_raw_lut_fraction"], 0.5)
+        assert_close(overlap_local["cached_kv_raw_scale_fraction"], 0.5)
+        assert_close(overlap_local["cached_kv_overlap_hidden_fraction"], 0.25)
         assert_close(
             overlap_local["cached_kv_cycles"],
             float(overlap_local["cached_kv_unoverlapped_cycles"])
@@ -561,6 +582,14 @@ def check_patch6_run(binary: Path) -> None:
         )
         assert float(overlap_local["cached_kv_cycles"]) < float(
             base_local["cached_kv_cycles"]
+        )
+        assert (
+            overlap_local["bottleneck_stage"]
+            == "pim_cached_kv_lut_scale_pipeline"
+        )
+        assert_close(
+            overlap_local["bottleneck_fraction"],
+            float(overlap_local["cached_kv_pipeline_critical_path_fraction"]),
         )
 
         slow_completed = run_simulator(
@@ -638,6 +667,18 @@ def check_patch6_run(binary: Path) -> None:
         )
         assert float(by_scenario["overlap_full"]["mean_latency_ns"]) < float(
             by_scenario["overlap_half"]["mean_latency_ns"]
+        )
+        assert (
+            by_scenario["overlap_half"]["dominant_bottleneck_stage"]
+            == "pim_cached_kv_lut_scale_pipeline"
+        )
+        assert_close(
+            by_scenario["overlap_half"]["mean_bottleneck_stage_fraction"],
+            float(
+                by_scenario["overlap_half"][
+                    "mean_cached_kv_pipeline_critical_path_fraction"
+                ]
+            ),
         )
         assert float(by_scenario["cached_scale_fast"]["mean_latency_ns"]) < float(
             by_scenario["base"]["mean_latency_ns"]

@@ -99,6 +99,18 @@ effective_cycles = lut_cycles + scale_cycles
 shorter stage, and `1` represents full pipeline overlap. The CSV retains the
 raw LUT and scale costs, their unoverlapped sum, and hidden cycles.
 
+The attribution fields separate raw stage composition from effective latency:
+
+- `cached_kv_raw_lut_fraction` and `cached_kv_raw_scale_fraction` sum to one;
+- `cached_kv_overlap_hidden_fraction` is the fraction of serial cached-KV
+  cycles hidden by overlap;
+- `cached_kv_pipeline_compute_fraction` and
+  `cached_kv_pipeline_critical_path_fraction` report the effective cached-KV
+  contribution after overlap.
+
+When overlap is nonzero, the effective bottleneck is reported as
+`pim_cached_kv_lut_scale_pipeline`. It is not attributed to LUT or scale alone.
+
 The executable accepts a strict whitelist of runtime overrides. This avoids
 rewriting YAML with string substitutions and rejects unknown or non-positive
 parameters:
@@ -517,6 +529,10 @@ VMUL, value scale, local VADD, Q8xK2 LUT, P8xV2 LUT, cached-KV scale,
 pseudo-channel reduce, and global reduce cycles. The three PE stages also report
 the bank that determines their latency.
 
+For overlapped cached-KV execution, raw LUT and scale fractions describe stage
+composition, while the effective pipeline fractions describe latency
+contribution. The bottleneck stage is the combined LUT/scale pipeline.
+
 The realistic H100 rows split the cache path into native INT2 cache read,
 unpack, scale/dequant, layout conversion, irregular-gather penalty, and
 small-batch penalty cycles.
@@ -529,7 +545,9 @@ Each per-query row includes:
 
 The aggregate CSV reports the mean of every cycle component plus the dominant
 bottleneck stage, the fraction of queries for which it dominates, and mean
-bottleneck contribution.
+bottleneck contribution. The stage contribution and query-label fraction are
+different quantities: a stage can dominate every query without accounting for
+100% of latency.
 
 Communication output includes total and critical bank/PC bytes for every link,
 along with PC/global reducer input and output group counts. This makes it

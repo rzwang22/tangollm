@@ -124,6 +124,7 @@ PER_QUERY_COLUMNS = {
     "local_vadd_operation_groups",
     "local_vadd_cycles",
     "compute_cycles",
+    "total_cycles",
     "communication_cycles",
     "reducer_cycles",
     "critical_path_latency_ns",
@@ -136,11 +137,17 @@ PER_QUERY_COLUMNS = {
     "cached_kv_critical_scale_cycles",
     "cached_kv_unoverlapped_cycles",
     "cached_kv_overlap_hidden_cycles",
+    "cached_kv_raw_lut_fraction",
+    "cached_kv_raw_scale_fraction",
+    "cached_kv_overlap_hidden_fraction",
+    "cached_kv_pipeline_compute_fraction",
+    "cached_kv_pipeline_critical_path_fraction",
     "q8k2_lut_cycles",
     "p8v2_lut_cycles",
     "q8k8_vdot_cycles",
     "p8v8_vmul_cycles",
     "bottleneck_stage",
+    "bottleneck_fraction",
 }
 
 AGGREGATE_COLUMNS = {
@@ -420,6 +427,17 @@ def validate_outputs(
         unoverlapped = number(row, "cached_kv_unoverlapped_cycles")
         hidden = number(row, "cached_kv_overlap_hidden_cycles")
         effective = number(row, "cached_kv_cycles")
+        raw_lut_fraction = number(row, "cached_kv_raw_lut_fraction")
+        raw_scale_fraction = number(row, "cached_kv_raw_scale_fraction")
+        hidden_fraction = number(row, "cached_kv_overlap_hidden_fraction")
+        compute_fraction = number(row, "cached_kv_pipeline_compute_fraction")
+        critical_path_fraction = number(
+            row, "cached_kv_pipeline_critical_path_fraction"
+        )
+        compute = number(row, "compute_cycles")
+        total = number(row, "total_cycles")
+        if compute <= 0.0 or total <= 0.0:
+            raise SensitivityError(f"{scenario}: non-positive PIM cycle total")
         if not math.isclose(overlap, expected_overlap, rel_tol=0.0, abs_tol=1e-9):
             raise SensitivityError(f"{scenario}: cached-KV overlap override mismatch")
         if not math.isclose(
@@ -437,6 +455,42 @@ def validate_outputs(
             effective, unoverlapped - hidden, rel_tol=0.0, abs_tol=1e-6
         ):
             raise SensitivityError(f"{scenario}: cached-KV effective-cycle identity failed")
+        if unoverlapped > 0.0:
+            fraction_checks = (
+                (raw_lut_fraction, critical_lut / unoverlapped, "raw LUT"),
+                (raw_scale_fraction, critical_scale / unoverlapped, "raw scale"),
+                (hidden_fraction, hidden / unoverlapped, "hidden"),
+            )
+            for actual, expected, label in fraction_checks:
+                if not math.isclose(actual, expected, rel_tol=0.0, abs_tol=1e-6):
+                    raise SensitivityError(
+                        f"{scenario}: cached-KV {label} fraction identity failed"
+                    )
+            if not math.isclose(
+                raw_lut_fraction + raw_scale_fraction,
+                1.0,
+                rel_tol=0.0,
+                abs_tol=1e-6,
+            ):
+                raise SensitivityError(
+                    f"{scenario}: cached-KV raw fractions do not sum to one"
+                )
+        if not math.isclose(
+            compute_fraction,
+            effective / compute,
+            rel_tol=0.0,
+            abs_tol=1e-6,
+        ):
+            raise SensitivityError(f"{scenario}: cached-KV compute fraction identity failed")
+        if not math.isclose(
+            critical_path_fraction,
+            effective / total,
+            rel_tol=0.0,
+            abs_tol=1e-6,
+        ):
+            raise SensitivityError(
+                f"{scenario}: cached-KV critical-path fraction identity failed"
+            )
 
     for workload in workloads:
         baseline_keys: set[tuple[str, str]] | None = None
@@ -531,6 +585,21 @@ def metric_row(
         ),
         "mean_cached_kv_unoverlapped_cycles": mean_cached_kv_unoverlapped,
         "mean_cached_kv_overlap_hidden_cycles": mean_cached_kv_hidden,
+        "mean_cached_kv_raw_lut_fraction": mean(
+            local, "cached_kv_raw_lut_fraction"
+        ),
+        "mean_cached_kv_raw_scale_fraction": mean(
+            local, "cached_kv_raw_scale_fraction"
+        ),
+        "mean_cached_kv_overlap_hidden_fraction": mean(
+            local, "cached_kv_overlap_hidden_fraction"
+        ),
+        "mean_cached_kv_pipeline_compute_fraction": mean(
+            local, "cached_kv_pipeline_compute_fraction"
+        ),
+        "mean_cached_kv_pipeline_critical_path_fraction": mean(
+            local, "cached_kv_pipeline_critical_path_fraction"
+        ),
         "cached_kv_overlap_cycle_reduction": (
             mean_cached_kv_hidden / mean_cached_kv_unoverlapped
             if mean_cached_kv_unoverlapped > 0.0
@@ -563,6 +632,7 @@ def metric_row(
         / 1024,
         "dominant_bottleneck_stage": dominant,
         "bottleneck_query_fraction": dominant_count / len(local),
+        "mean_bottleneck_stage_fraction": mean(local, "bottleneck_fraction"),
     }
     for key, (short_name, _, _) in PARAMETERS.items():
         result[short_name] = scenario.values[key]
@@ -731,8 +801,8 @@ def main() -> None:
     print("\nPatch 6 validation-only sensitivity summary")
     print(
         "scenario mean_ms p95_ms change_vs_base local_latency_reduction "
-        "local_faster_queries stall overlap hidden_kv bottleneck "
-        "bottleneck_fraction"
+        "local_faster_queries stall overlap lut_raw scale_raw hidden_kv "
+        "kv_path bottleneck stage_share query_fraction"
     )
     for row in overall_rows:
         print(
@@ -744,8 +814,12 @@ def main() -> None:
             f"{float(row['local_faster_query_fraction']):>20.2%} "
             f"{float(row['mean_traffic_stall_fraction']):>6.2%} "
             f"{float(row['cached_kv_lut_scale_overlap']):>7.2f} "
+            f"{float(row['mean_cached_kv_raw_lut_fraction']):>7.2%} "
+            f"{float(row['mean_cached_kv_raw_scale_fraction']):>9.2%} "
             f"{float(row['cached_kv_overlap_cycle_reduction']):>9.2%} "
+            f"{float(row['mean_cached_kv_pipeline_critical_path_fraction']):>7.2%} "
             f"{row['dominant_bottleneck_stage']} "
+            f"{float(row['mean_bottleneck_stage_fraction']):.2%} "
             f"{float(row['bottleneck_query_fraction']):.2%}"
         )
     print(f"\nparameter_manifest={output_directory / 'patch6_parameter_manifest.csv'}")

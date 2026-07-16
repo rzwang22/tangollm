@@ -437,6 +437,11 @@ struct QueryResult {
   double cached_kv_critical_scale_cycles = 0.0;
   double cached_kv_unoverlapped_cycles = 0.0;
   double cached_kv_overlap_hidden_cycles = 0.0;
+  double cached_kv_raw_lut_fraction = 0.0;
+  double cached_kv_raw_scale_fraction = 0.0;
+  double cached_kv_overlap_hidden_fraction = 0.0;
+  double cached_kv_pipeline_compute_fraction = 0.0;
+  double cached_kv_pipeline_critical_path_fraction = 0.0;
   double pc_reduce_cycles = 0.0;
   double global_reduce_cycles = 0.0;
   double h100_cache_read_cycles = 0.0;
@@ -2510,6 +2515,25 @@ QueryResult SimulateQuery(const SimulationConfig& config,
       result.total_cycles == 0.0
           ? 0.0
           : result.communication_cycles / result.total_cycles;
+  if (result.cached_kv_unoverlapped_cycles > 0.0) {
+    result.cached_kv_raw_lut_fraction =
+        result.cached_kv_critical_lut_cycles /
+        result.cached_kv_unoverlapped_cycles;
+    result.cached_kv_raw_scale_fraction =
+        result.cached_kv_critical_scale_cycles /
+        result.cached_kv_unoverlapped_cycles;
+    result.cached_kv_overlap_hidden_fraction =
+        result.cached_kv_overlap_hidden_cycles /
+        result.cached_kv_unoverlapped_cycles;
+  }
+  if (result.compute_cycles > 0.0) {
+    result.cached_kv_pipeline_compute_fraction =
+        result.cached_kv_cycles / result.compute_cycles;
+  }
+  if (result.critical_path_cycles > 0.0) {
+    result.cached_kv_pipeline_critical_path_fraction =
+        result.cached_kv_cycles / result.critical_path_cycles;
+  }
   const double near_bank_cycles = result.compute_cycles;
   result.near_bank_pe_utilization =
       near_bank_cycles == 0.0
@@ -2540,9 +2564,7 @@ QueryResult SimulateQuery(const SimulationConfig& config,
       {"pim_local_vadd", result.local_vadd_cycles}};
   if (config.pe.cached_kv_lut_scale_overlap > 0.0) {
     bottleneck_stages.push_back(
-        {"pim_cached_kv_scale", result.cached_kv_critical_scale_cycles});
-    bottleneck_stages.push_back(
-        {"pim_cached_kv_lut", result.cached_kv_critical_lut_cycles});
+        {"pim_cached_kv_lut_scale_pipeline", result.cached_kv_cycles});
   } else {
     bottleneck_stages.push_back(
         {"pim_q8k2_lut", result.q8k2_lut_cycles});
@@ -2635,7 +2657,10 @@ void WritePerQueryCSV(const std::string& path,
          "p8v2_lut_cycles,cached_kv_scale_cycles,"
          "cached_kv_lut_scale_overlap,cached_kv_critical_lut_cycles,"
          "cached_kv_critical_scale_cycles,cached_kv_unoverlapped_cycles,"
-         "cached_kv_overlap_hidden_cycles,pc_reduce_cycles,"
+         "cached_kv_overlap_hidden_cycles,cached_kv_raw_lut_fraction,"
+         "cached_kv_raw_scale_fraction,cached_kv_overlap_hidden_fraction,"
+         "cached_kv_pipeline_compute_fraction,"
+         "cached_kv_pipeline_critical_path_fraction,pc_reduce_cycles,"
          "global_reduce_cycles,h100_cache_read_cycles,"
          "h100_int2_unpack_cycles,h100_scale_dequant_cycles,"
          "h100_layout_conversion_cycles,"
@@ -2744,8 +2769,13 @@ void WritePerQueryCSV(const std::string& path,
         << r.cached_kv_critical_lut_cycles << ","
         << r.cached_kv_critical_scale_cycles << ","
         << r.cached_kv_unoverlapped_cycles << ","
-        << r.cached_kv_overlap_hidden_cycles << "," << r.pc_reduce_cycles
-        << ","
+        << r.cached_kv_overlap_hidden_cycles << ","
+        << r.cached_kv_raw_lut_fraction << ","
+        << r.cached_kv_raw_scale_fraction << ","
+        << r.cached_kv_overlap_hidden_fraction << ","
+        << r.cached_kv_pipeline_compute_fraction << ","
+        << r.cached_kv_pipeline_critical_path_fraction << ","
+        << r.pc_reduce_cycles << ","
         << r.global_reduce_cycles << "," << r.h100_cache_read_cycles << ","
         << r.h100_int2_unpack_cycles << "," << r.h100_scale_dequant_cycles
         << "," << r.h100_layout_conversion_cycles << ","
@@ -2938,6 +2968,11 @@ void WriteAggregateCSV(const std::string& path,
          "mean_cached_kv_critical_scale_cycles,"
          "mean_cached_kv_unoverlapped_cycles,"
          "mean_cached_kv_overlap_hidden_cycles,"
+         "mean_cached_kv_raw_lut_fraction,"
+         "mean_cached_kv_raw_scale_fraction,"
+         "mean_cached_kv_overlap_hidden_fraction,"
+         "mean_cached_kv_pipeline_compute_fraction,"
+         "mean_cached_kv_pipeline_critical_path_fraction,"
          "mean_pc_reduce_cycles,mean_global_reduce_cycles,"
          "mean_h100_cache_read_cycles,mean_h100_int2_unpack_cycles,"
          "mean_h100_scale_dequant_cycles,"
@@ -3249,6 +3284,23 @@ void WriteAggregateCSV(const std::string& path,
                   << ","
                   << MeanResultField(
                          group, &QueryResult::cached_kv_overlap_hidden_cycles)
+                  << ","
+                  << MeanResultField(
+                         group, &QueryResult::cached_kv_raw_lut_fraction)
+                  << ","
+                  << MeanResultField(
+                         group, &QueryResult::cached_kv_raw_scale_fraction)
+                  << ","
+                  << MeanResultField(
+                         group, &QueryResult::cached_kv_overlap_hidden_fraction)
+                  << ","
+                  << MeanResultField(
+                         group,
+                         &QueryResult::cached_kv_pipeline_compute_fraction)
+                  << ","
+                  << MeanResultField(
+                         group,
+                         &QueryResult::cached_kv_pipeline_critical_path_fraction)
                   << ","
                   << MeanResultField(group, &QueryResult::pc_reduce_cycles)
                   << ","
