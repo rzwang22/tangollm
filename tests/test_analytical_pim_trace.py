@@ -20,6 +20,7 @@ CONFIG_TEMPLATE = REPOSITORY_ROOT / "tests/analytical_pim_trace_fixture_config.y
 TASK_DIRECTORY = "fixture_task_formal_v1"
 FINAL_ANALYZER = REPOSITORY_ROOT / "tools/analyze_gofa_trace_final.py"
 PATCH6_RUNNER = REPOSITORY_ROOT / "tools/run_patch6_sensitivity.py"
+PATCH6_CACHED_KV_GRID = REPOSITORY_ROOT / "tools/run_patch6_cached_kv_grid.py"
 
 
 def write_config(directory: Path, trace_root: Path) -> Path:
@@ -699,6 +700,111 @@ def check_patch6_run(binary: Path) -> None:
             load_rows(sensitivity_directory / "patch6_parameter_manifest.csv")
         ) == 16
 
+        grid_directory = directory / "cached_kv_grid"
+        grid_completed = subprocess.run(
+            [
+                sys.executable,
+                str(PATCH6_CACHED_KV_GRID),
+                "--binary",
+                str(binary),
+                "--config",
+                str(config),
+                "--output-directory",
+                str(grid_directory),
+                "--expected-workloads",
+                "fixture_task",
+                "--expected-queries-per-workload",
+                "1",
+            ],
+            cwd=REPOSITORY_ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        assert grid_completed.returncode == 0, grid_completed.stdout
+        assert "No test rows were simulated or reported" in grid_completed.stdout
+        grid_overall = load_rows(
+            grid_directory / "patch6_cached_kv_grid_overall.csv"
+        )
+        grid_workload = load_rows(
+            grid_directory / "patch6_cached_kv_grid_by_workload.csv"
+        )
+        grid_manifest = load_rows(
+            grid_directory / "patch6_cached_kv_grid_manifest.csv"
+        )
+        assert len(grid_overall) == 36
+        assert len(grid_workload) == 36
+        assert len(grid_manifest) == 36
+        assert len(
+            {
+                (
+                    row["grid_int2_lut_group_cycles"],
+                    row["grid_cached_kv_scale_group_cycles"],
+                    row["grid_cached_kv_lut_scale_overlap"],
+                )
+                for row in grid_overall
+            }
+        ) == 36
+
+        def grid_point(lut: float, scale: float, overlap: float) -> dict[str, str]:
+            return next(
+                row
+                for row in grid_overall
+                if float(row["grid_int2_lut_group_cycles"]) == lut
+                and float(row["grid_cached_kv_scale_group_cycles"]) == scale
+                and float(row["grid_cached_kv_lut_scale_overlap"]) == overlap
+            )
+
+        reference = grid_point(1.0, 1.0, 0.0)
+        assert reference["is_reference_point"] == "1"
+        assert_close(reference["latency_change_vs_reference"], 0)
+        assert float(grid_point(0.5, 1.0, 0.0)["mean_latency_ns"]) < float(
+            reference["mean_latency_ns"]
+        ) < float(grid_point(2.0, 1.0, 0.0)["mean_latency_ns"])
+        assert float(grid_point(1.0, 0.25, 0.0)["mean_latency_ns"]) < float(
+            grid_point(1.0, 0.5, 0.0)["mean_latency_ns"]
+        ) < float(reference["mean_latency_ns"]) < float(
+            grid_point(1.0, 2.0, 0.0)["mean_latency_ns"]
+        )
+        assert float(grid_point(1.0, 1.0, 1.0)["mean_latency_ns"]) < float(
+            grid_point(1.0, 1.0, 0.5)["mean_latency_ns"]
+        ) < float(reference["mean_latency_ns"])
+        asymmetric = grid_point(0.5, 1.0, 0.0)
+        assert_close(asymmetric["mean_cached_kv_raw_lut_fraction"], 1 / 3)
+        assert_close(asymmetric["mean_cached_kv_raw_scale_fraction"], 2 / 3)
+        overlapped = grid_point(1.0, 1.0, 0.5)
+        assert (
+            overlapped["dominant_bottleneck_stage"]
+            == "pim_cached_kv_lut_scale_pipeline"
+        )
+
+        missing_reference = subprocess.run(
+            [
+                sys.executable,
+                str(PATCH6_CACHED_KV_GRID),
+                "--binary",
+                str(binary),
+                "--config",
+                str(config),
+                "--output-directory",
+                str(directory / "missing_reference_grid"),
+                "--expected-workloads",
+                "fixture_task",
+                "--expected-queries-per-workload",
+                "1",
+                "--overlaps",
+                "0.5,1",
+            ],
+            cwd=REPOSITORY_ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        assert missing_reference.returncode != 0
+        assert "grid must contain the reference point" in missing_reference.stdout
+
 
 def main() -> None:
     parser = argparse.ArgumentParser()
@@ -710,7 +816,7 @@ def main() -> None:
     check_valid_run(binary)
     check_negative_cases(binary)
     check_patch6_run(binary)
-    print("Patch 5/6 analytical tests passed: valid=7, negative=10")
+    print("Patch 5/6 analytical tests passed: valid=8, negative=11")
 
 
 if __name__ == "__main__":

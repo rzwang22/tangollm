@@ -146,6 +146,31 @@ Patch 6 writes:
 - `patch6_sensitivity_overall.csv`: 17 exact 500-query summaries;
 - `raw/`: per-scenario simulator CSV and logs.
 
+After the single-factor envelope, run the cached-KV joint calibration grid:
+
+```bash
+python3 ../tools/run_patch6_cached_kv_grid.py \
+  --binary ./analytical_pim \
+  --config ./analytical_pim_patch6_config.yaml \
+  --output-directory ../data/patch6_cached_kv_grid \
+  | tee patch6_cached_kv_grid.log
+```
+
+The default grid ties Q8xK2 and P8xV2 LUT throughput and sweeps:
+
+```text
+INT2 LUT cycles/group = {0.5, 1, 2}
+scale cycles/group    = {0.25, 0.5, 1, 2}
+LUT/scale overlap     = {0, 0.5, 1}
+```
+
+It produces 36 validation-only points, 180 per-workload rows, and a 36-row
+scenario manifest. `LUT=1, scale=1, overlap=0` is the reference point. Each row
+reports mean/p95 latency, change from the reference, effective cached-KV path
+share, raw LUT/scale composition, hidden fraction, local-combine gain, and
+bottleneck stage/share. These are uncalibrated sensitivity points; the grid
+does not select a hardware configuration or evaluate test traces.
+
 Every parameter is labeled `uncalibrated_assumption`. These sweeps measure
 model sensitivity and bottleneck transitions; they are not hardware
 calibration evidence. Test results remain frozen from Patch 5, and Patch 6 does

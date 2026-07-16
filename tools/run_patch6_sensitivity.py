@@ -389,12 +389,8 @@ def validate_outputs(
     workloads: Sequence[str],
     queries_per_workload: int,
     scenario: str,
+    expected_overlap: float,
 ) -> None:
-    expected_overlap = next(
-        candidate.values["near_bank_pe.cached_kv_lut_scale_overlap"]
-        for candidate in SCENARIOS
-        if candidate.name == scenario
-    )
     expected_per_query = len(workloads) * queries_per_workload * 2
     expected_aggregate = len(workloads) * 2
     if len(per_query) != expected_per_query or any(
@@ -708,7 +704,12 @@ def run_scenario(
     per_query = read_csv(per_query_path, PER_QUERY_COLUMNS)
     aggregate = read_csv(aggregate_path, AGGREGATE_COLUMNS)
     validate_outputs(
-        per_query, aggregate, workloads, queries_per_workload, scenario.name
+        per_query,
+        aggregate,
+        workloads,
+        queries_per_workload,
+        scenario.name,
+        scenario.values["near_bank_pe.cached_kv_lut_scale_overlap"],
     )
     return per_query, aggregate
 
