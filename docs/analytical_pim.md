@@ -272,6 +272,18 @@ the additional VADD work. Both paths produce one `(pseudo-channel,destination)`
 group for the global reducer, so their global input is intentionally identical
 after a complete pseudo-channel reduction.
 
+The first partial message for each `(bank,destination)` group initializes its
+accumulator without a VADD. Only subsequent partials execute VADD:
+
+```text
+VADD input edge groups = all edge message groups
+VADD initialization groups = bank-local destination groups
+VADD operation groups = input edge groups - initialization groups
+```
+
+The CSV reports all three group counts. `local_vadd_cycles` is the critical
+path of VADD operation groups on the busiest bank, not the sum across banks.
+
 ## Communication-Aware Timing
 
 The four modeled links are configured independently:
@@ -467,8 +479,8 @@ The per-query CSV has:
 Patch 4 with selected-KV placement diagnosis emits 127 per-query columns and
 116 aggregate columns.
 
-Patch 5 with the corrected local-buffer model emits 181 per-query columns and
-166 aggregate columns. The additional
+Patch 5 with the corrected local-buffer and VADD models emits 184 per-query
+columns and 169 aggregate columns. The additional
 fields carry trace identity, split/evaluation role, target/question and cache
 inventory counts, independent graph/KV placement, native cache bytes including
 edge-cache bytes, token counts, QK/PV work, NOG shapes, and per-bank local

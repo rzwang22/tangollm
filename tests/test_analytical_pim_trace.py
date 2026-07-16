@@ -72,6 +72,8 @@ def check_valid_run(binary: Path) -> None:
         aggregate = load_rows(directory / "aggregate.csv")
         assert len(per_query) == 32
         assert len(aggregate) == 32
+        assert len(per_query[0]) == 184
+        assert len(aggregate[0]) == 169
         assert all(
             None not in row and all(value is not None for value in row.values())
             for row in per_query
@@ -128,6 +130,9 @@ def check_valid_run(binary: Path) -> None:
             "local_buffer_overflow_bytes_per_bank",
             "local_buffer_capacity_utilization",
             "local_buffer_capacity_exceeded",
+            "local_vadd_input_edge_groups",
+            "local_vadd_initialization_groups",
+            "local_vadd_operation_groups",
         }
         assert required_columns <= set(per_query[0])
 
@@ -192,8 +197,15 @@ def check_valid_run(binary: Path) -> None:
         assert_close(local_t4["local_buffer_overflow_bytes_per_bank"], 0)
         assert_close(local_t4["local_buffer_capacity_utilization"], 0.25)
         assert local_t4["local_buffer_capacity_exceeded"] == "0"
+        assert_close(local_t4["local_vadd_input_edge_groups"], 393216)
+        assert_close(local_t4["local_vadd_initialization_groups"], 393216)
+        assert_close(local_t4["local_vadd_operation_groups"], 0)
+        assert_close(local_t4["local_vadd_cycles"], 0)
         assert_close(no_local_t4["local_combine_buffer_max_bytes"], 0)
         assert no_local_t4["local_buffer_concurrent_destinations"] == "0"
+        assert_close(no_local_t4["local_vadd_input_edge_groups"], 0)
+        assert_close(no_local_t4["local_vadd_initialization_groups"], 0)
+        assert_close(no_local_t4["local_vadd_operation_groups"], 0)
 
         combinations = {
             (row["graph_compute_placement"], row["kv_storage_placement"])
@@ -380,7 +392,7 @@ def main() -> None:
         raise SystemExit(f"Missing analytical_pim binary: {binary}")
     check_valid_run(binary)
     check_negative_cases(binary)
-    print("Patch 5 buffer tests passed: valid=2, negative=6")
+    print("Patch 5 buffer/VADD tests passed: valid=2, negative=6")
 
 
 if __name__ == "__main__":

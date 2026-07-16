@@ -421,6 +421,9 @@ struct QueryResult {
   double gnn_score_scale_cycles = 0.0;
   double p8v8_vmul_cycles = 0.0;
   double gnn_value_scale_cycles = 0.0;
+  double local_vadd_input_edge_groups = 0.0;
+  double local_vadd_initialization_groups = 0.0;
+  double local_vadd_operation_groups = 0.0;
   double local_vadd_cycles = 0.0;
   double q8k2_lut_cycles = 0.0;
   double p8v2_lut_cycles = 0.0;
@@ -1853,9 +1856,10 @@ QueryResult SimulateQuery(const SimulationConfig& config,
       CeilDiv(config.model.memory_tokens, memory_token_tile);
   const int selected_kv_count = CountSelectedKV(query);
   const int edge_count = static_cast<int>(query.edges.size());
-  const double score_groups = 1.0 * edge_count * config.model.memory_tokens *
-                              config.model.gnn_heads * groups_per_head *
-                              query.gnn_layer_count;
+  const double group_multiplier = 1.0 * config.model.memory_tokens *
+                                  config.model.gnn_heads * groups_per_head *
+                                  query.gnn_layer_count;
+  const double score_groups = edge_count * group_multiplier;
   const double message_groups = score_groups;
   double cached_qk_groups = 0.0;
   double cached_pv_groups = 0.0;
@@ -1868,6 +1872,11 @@ QueryResult SimulateQuery(const SimulationConfig& config,
   std::set<int> active_banks;
   std::set<int> active_pcs;
   std::vector<int> edge_count_by_bank(config.topology.total_banks(), 0);
+  std::vector<std::set<int>> destinations_by_bank(
+      config.topology.total_banks());
+  std::vector<std::set<int>> destinations_by_pc(
+      config.topology.total_pseudo_channels());
+  std::set<int> global_destinations;
   const KVBankPlacement kv_bank_placement =
       PlaceKVItems(query, config, graph_placement, kv_placement);
   const std::vector<int>& selected_count_by_bank =
@@ -1876,6 +1885,9 @@ QueryResult SimulateQuery(const SimulationConfig& config,
     active_banks.insert(edge.bank);
     active_pcs.insert(edge.pseudo_channel);
     edge_count_by_bank[edge.bank]++;
+    destinations_by_bank[edge.bank].insert(edge.dst);
+    destinations_by_pc[edge.pseudo_channel].insert(edge.dst);
+    global_destinations.insert(edge.dst);
   }
   for (int bank = 0; bank < config.topology.total_banks(); ++bank) {
     if (selected_count_by_bank[bank] > 0) {
@@ -2021,6 +2033,14 @@ QueryResult SimulateQuery(const SimulationConfig& config,
       score_groups / groups_per_head * config.precision.score_bytes;
   result.p_return_traffic_bytes =
       score_groups / groups_per_head * config.precision.p8_bytes;
+  if (baseline == kPIMLocalCombine) {
+    result.local_vadd_input_edge_groups = message_groups;
+    result.local_vadd_initialization_groups =
+        result.diagnosis.bank_local_group_count_after_combine;
+    result.local_vadd_operation_groups =
+        std::max(0.0, result.local_vadd_input_edge_groups -
+                          result.local_vadd_initialization_groups);
+  }
 
   double score_cycles = 0.0;
   double message_cycles = 0.0;
@@ -2028,9 +2048,15 @@ QueryResult SimulateQuery(const SimulationConfig& config,
   double pe_work_cycles = 0.0;
   for (int bank = 0; bank < config.topology.total_banks(); ++bank) {
     const double bank_score_groups =
-        1.0 * edge_count_by_bank[bank] * config.model.memory_tokens *
-        config.model.gnn_heads * groups_per_head * query.gnn_layer_count;
+        edge_count_by_bank[bank] * group_multiplier;
     const double bank_message_groups = bank_score_groups;
+    const double bank_local_initialization_groups =
+        destinations_by_bank[bank].size() * group_multiplier;
+    const double bank_local_vadd_operation_groups =
+        baseline == kPIMLocalCombine
+            ? std::max(0.0,
+                       bank_message_groups - bank_local_initialization_groups)
+            : 0.0;
     const double bank_qk_groups = kv_bank_placement.qk_groups[bank];
     const double bank_pv_groups = kv_bank_placement.pv_groups[bank];
     const double bank_score_cycles =
@@ -2038,9 +2064,9 @@ QueryResult SimulateQuery(const SimulationConfig& config,
         (config.pe.q8k8_group_cycles + config.pe.scale_group_cycles) /
         config.topology.pe_per_bank;
     const double bank_message_cycles =
-        bank_message_groups *
-        (config.pe.p8v8_group_cycles + config.pe.scale_group_cycles +
-         (baseline == kPIMLocalCombine ? config.pe.vadd_group_cycles : 0.0)) /
+        (bank_message_groups *
+             (config.pe.p8v8_group_cycles + config.pe.scale_group_cycles) +
+         bank_local_vadd_operation_groups * config.pe.vadd_group_cycles) /
         config.topology.pe_per_bank;
     const double bank_kv_cycles =
         (bank_qk_groups *
@@ -2060,11 +2086,9 @@ QueryResult SimulateQuery(const SimulationConfig& config,
     const double bank_message_scale_cycles =
         bank_message_groups * config.pe.scale_group_cycles /
         config.topology.pe_per_bank;
-    const double bank_local_vadd_cycles =
-        baseline == kPIMLocalCombine
-            ? bank_message_groups * config.pe.vadd_group_cycles /
-                  config.topology.pe_per_bank
-            : 0.0;
+    const double bank_local_vadd_cycles = bank_local_vadd_operation_groups *
+                                          config.pe.vadd_group_cycles /
+                                          config.topology.pe_per_bank;
     const double bank_q8k2_lut_cycles = bank_qk_groups *
                                         config.pe.q8k2_lut_group_cycles /
                                         config.topology.pe_per_bank;
@@ -2116,21 +2140,8 @@ QueryResult SimulateQuery(const SimulationConfig& config,
   if (baseline != kPIMNoLocalCombine && baseline != kPIMLocalCombine) {
     throw std::runtime_error("Unknown baseline: " + baseline);
   }
-  const double group_multiplier = 1.0 * config.model.memory_tokens *
-                                  config.model.gnn_heads * groups_per_head *
-                                  query.gnn_layer_count;
   const double message_bytes_per_group =
       config.tile.channel_group * config.precision.partial_msg_bytes;
-  std::vector<std::set<int>> destinations_by_bank(
-      config.topology.total_banks());
-  std::vector<std::set<int>> destinations_by_pc(
-      config.topology.total_pseudo_channels());
-  std::set<int> global_destinations;
-  for (const auto& edge : query.edges) {
-    destinations_by_bank[edge.bank].insert(edge.dst);
-    destinations_by_pc[edge.pseudo_channel].insert(edge.dst);
-    global_destinations.insert(edge.dst);
-  }
 
   const int total_head_tiles =
       (config.model.gnn_heads + config.tile.head_tile - 1) /
@@ -2426,7 +2437,9 @@ void WritePerQueryCSV(const std::string& path,
          "message_traffic_after_local_combine,bank_imbalance,"
          "pseudo_channel_imbalance,q8k8_vdot_cycles,"
          "gnn_score_scale_cycles,p8v8_vmul_cycles,"
-         "gnn_value_scale_cycles,local_vadd_cycles,q8k2_lut_cycles,"
+         "gnn_value_scale_cycles,local_vadd_input_edge_groups,"
+         "local_vadd_initialization_groups,local_vadd_operation_groups,"
+         "local_vadd_cycles,q8k2_lut_cycles,"
          "p8v2_lut_cycles,cached_kv_scale_cycles,pc_reduce_cycles,"
          "global_reduce_cycles,h100_cache_read_cycles,"
          "h100_int2_unpack_cycles,h100_scale_dequant_cycles,"
@@ -2527,7 +2540,9 @@ void WritePerQueryCSV(const std::string& path,
         << d.message_traffic_after_local_combine << "," << d.bank_imbalance
         << "," << d.pseudo_channel_imbalance << "," << r.q8k8_vdot_cycles << ","
         << r.gnn_score_scale_cycles << "," << r.p8v8_vmul_cycles << ","
-        << r.gnn_value_scale_cycles << "," << r.local_vadd_cycles << ","
+        << r.gnn_value_scale_cycles << "," << r.local_vadd_input_edge_groups
+        << "," << r.local_vadd_initialization_groups << ","
+        << r.local_vadd_operation_groups << "," << r.local_vadd_cycles << ","
         << r.q8k2_lut_cycles << "," << r.p8v2_lut_cycles << ","
         << r.cached_kv_scale_cycles << "," << r.pc_reduce_cycles << ","
         << r.global_reduce_cycles << "," << r.h100_cache_read_cycles << ","
@@ -2712,7 +2727,10 @@ void WriteAggregateCSV(const std::string& path,
          "mean_reducer_cycles,mean_scheduling_cycles,"
          "mean_q8k8_vdot_cycles,mean_gnn_score_scale_cycles,"
          "mean_p8v8_vmul_cycles,mean_gnn_value_scale_cycles,"
-         "mean_local_vadd_cycles,mean_q8k2_lut_cycles,"
+         "mean_local_vadd_input_edge_groups,"
+         "mean_local_vadd_initialization_groups,"
+         "mean_local_vadd_operation_groups,mean_local_vadd_cycles,"
+         "mean_q8k2_lut_cycles,"
          "mean_p8v2_lut_cycles,mean_cached_kv_scale_cycles,"
          "mean_pc_reduce_cycles,mean_global_reduce_cycles,"
          "mean_h100_cache_read_cycles,mean_h100_int2_unpack_cycles,"
@@ -2992,6 +3010,15 @@ void WriteAggregateCSV(const std::string& path,
                   << ","
                   << MeanResultField(group,
                                      &QueryResult::gnn_value_scale_cycles)
+                  << ","
+                  << MeanResultField(group,
+                                     &QueryResult::local_vadd_input_edge_groups)
+                  << ","
+                  << MeanResultField(
+                         group, &QueryResult::local_vadd_initialization_groups)
+                  << ","
+                  << MeanResultField(group,
+                                     &QueryResult::local_vadd_operation_groups)
                   << ","
                   << MeanResultField(group, &QueryResult::local_vadd_cycles)
                   << ","
