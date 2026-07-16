@@ -85,7 +85,19 @@ near_bank_pe:
   scale_group_cycles: 1
   gnn_scale_group_cycles: 1
   cached_kv_scale_group_cycles: 1
+  cached_kv_lut_scale_overlap: 0
 ```
+
+Cached-KV LUT selection and group-wise scale/dequant can overlap:
+
+```text
+effective_cycles = lut_cycles + scale_cycles
+                 - overlap * min(lut_cycles, scale_cycles)
+```
+
+`overlap=0` preserves the Patch 5 serial model, `0.5` hides half of the
+shorter stage, and `1` represents full pipeline overlap. The CSV retains the
+raw LUT and scale costs, their unoverlapped sum, and hidden cycles.
 
 The executable accepts a strict whitelist of runtime overrides. This avoids
 rewriting YAML with string substitutions and rejects unknown or non-positive
@@ -108,18 +120,18 @@ python3 ../tools/run_patch6_sensitivity.py \
   | tee patch6_sensitivity.log
 ```
 
-The 15 scenarios include the base point, fast/slow single-factor sweeps for
-cached-KV scale, INT2 LUT, GNN pipeline, VADD, communication, and reducer, plus
-optimistic/conservative joint envelopes. Cycle costs use `0.5x/1x/2x` and
-bandwidth or throughput uses `2x/1x/0.5x` for
-optimistic/base/conservative assumptions.
+The 17 scenarios include the base point, 50% and 100% cached-KV LUT/scale
+overlap, fast/slow single-factor sweeps for cached-KV scale, INT2 LUT, GNN
+pipeline, VADD, communication, and reducer, plus optimistic/conservative joint
+envelopes. Cycle costs use `0.5x/1x/2x` and bandwidth or throughput uses
+`2x/1x/0.5x` for optimistic/base/conservative assumptions.
 
 Patch 6 writes:
 
 - `patch6_parameter_manifest.csv`: parameter units, envelopes, and calibration
-  status;
-- `patch6_sensitivity_by_workload.csv`: 75 scenario/workload rows;
-- `patch6_sensitivity_overall.csv`: 15 exact 500-query summaries;
+  status for 16 parameters;
+- `patch6_sensitivity_by_workload.csv`: 85 scenario/workload rows;
+- `patch6_sensitivity_overall.csv`: 17 exact 500-query summaries;
 - `raw/`: per-scenario simulator CSV and logs.
 
 Every parameter is labeled `uncalibrated_assumption`. These sweeps measure

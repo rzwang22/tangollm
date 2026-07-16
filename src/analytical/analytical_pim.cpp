@@ -70,6 +70,7 @@ struct PEConfig {
   double scale_group_cycles = 1.0;
   double gnn_scale_group_cycles = 1.0;
   double cached_kv_scale_group_cycles = 1.0;
+  double cached_kv_lut_scale_overlap = 0.0;
   double softmax_group_cycles = 1.0;
   double scheduling_overhead_per_tile_cycles = 16.0;
 
@@ -431,6 +432,11 @@ struct QueryResult {
   double q8k2_lut_cycles = 0.0;
   double p8v2_lut_cycles = 0.0;
   double cached_kv_scale_cycles = 0.0;
+  double cached_kv_lut_scale_overlap = 0.0;
+  double cached_kv_critical_lut_cycles = 0.0;
+  double cached_kv_critical_scale_cycles = 0.0;
+  double cached_kv_unoverlapped_cycles = 0.0;
+  double cached_kv_overlap_hidden_cycles = 0.0;
   double pc_reduce_cycles = 0.0;
   double global_reduce_cycles = 0.0;
   double h100_cache_read_cycles = 0.0;
@@ -618,6 +624,8 @@ SimulationConfig LoadConfig(const std::string& config_path) {
       pe, "gnn_scale_group_cycles", config.pe.scale_group_cycles);
   config.pe.cached_kv_scale_group_cycles = ReadScalar<double>(
       pe, "cached_kv_scale_group_cycles", config.pe.scale_group_cycles);
+  config.pe.cached_kv_lut_scale_overlap =
+      ReadScalar<double>(pe, "cached_kv_lut_scale_overlap", 0.0);
   config.pe.softmax_group_cycles =
       ReadScalar<double>(pe, "softmax_group_cycles", 1.0);
   config.pe.scheduling_overhead_per_tile_cycles =
@@ -854,6 +862,8 @@ SimulationConfig LoadConfig(const std::string& config_path) {
       config.pe.vadd_group_cycles <= 0.0 ||
       config.pe.gnn_scale_group_cycles <= 0.0 ||
       config.pe.cached_kv_scale_group_cycles <= 0.0 ||
+      config.pe.cached_kv_lut_scale_overlap < 0.0 ||
+      config.pe.cached_kv_lut_scale_overlap > 1.0 ||
       config.pe.softmax_group_cycles <= 0.0 ||
       config.pe.scheduling_overhead_per_tile_cycles < 0.0 ||
       config.pe.clock_ns <= 0.0 ||
@@ -956,6 +966,24 @@ double ParsePositiveOverride(const std::string& key,
   return result;
 }
 
+double ParseUnitIntervalOverride(const std::string& key,
+                                 const std::string& value) {
+  size_t parsed = 0;
+  double result = 0.0;
+  try {
+    result = std::stod(value, &parsed);
+  } catch (const std::exception&) {
+    throw std::runtime_error("Invalid numeric override " + key + "=" +
+                             value);
+  }
+  if (parsed != value.size() || !std::isfinite(result) || result < 0.0 ||
+      result > 1.0) {
+    throw std::runtime_error("Override must be within [0,1]: " + key + "=" +
+                             value);
+  }
+  return result;
+}
+
 void ApplyConfigOverrides(SimulationConfig& config,
                           const std::vector<std::string>& overrides) {
   std::map<std::string, double*> numeric_fields = {
@@ -1002,6 +1030,9 @@ void ApplyConfigOverrides(SimulationConfig& config,
     const auto numeric = numeric_fields.find(key);
     if (numeric != numeric_fields.end()) {
       *numeric->second = ParsePositiveOverride(key, value);
+    } else if (key == "near_bank_pe.cached_kv_lut_scale_overlap") {
+      config.pe.cached_kv_lut_scale_overlap =
+          ParseUnitIntervalOverride(key, value);
     } else if (key == "output.per_query_csv") {
       config.output.per_query_csv = value;
     } else if (key == "output.aggregate_csv") {
@@ -1046,7 +1077,9 @@ void PrintSanityCheck(const SimulationConfig& config) {
             << ", vadd=" << config.pe.vadd_group_cycles
             << ", gnn_scale=" << config.pe.gnn_scale_group_cycles
             << ", cached_kv_scale="
-            << config.pe.cached_kv_scale_group_cycles << "\n";
+            << config.pe.cached_kv_scale_group_cycles
+            << ", cached_kv_lut_scale_overlap="
+            << config.pe.cached_kv_lut_scale_overlap << "\n";
   std::cout << "hybrid_placement: hot_dst_degree_threshold="
             << config.hybrid.hot_dst_degree_threshold
             << ", target_edges_per_bank="
@@ -2181,6 +2214,8 @@ QueryResult SimulateQuery(const SimulationConfig& config,
   double message_cycles = 0.0;
   double kv_cycles = 0.0;
   double pe_work_cycles = 0.0;
+  result.cached_kv_lut_scale_overlap =
+      config.pe.cached_kv_lut_scale_overlap;
   for (int bank = 0; bank < config.topology.total_banks(); ++bank) {
     const double bank_score_groups =
         edge_count_by_bank[bank] * group_multiplier;
@@ -2204,14 +2239,6 @@ QueryResult SimulateQuery(const SimulationConfig& config,
               config.pe.gnn_scale_group_cycles) +
          bank_local_vadd_operation_groups * config.pe.vadd_group_cycles) /
         config.topology.pe_per_bank;
-    const double bank_kv_cycles =
-        (bank_qk_groups *
-             (config.pe.q8k2_lut_group_cycles +
-              config.pe.cached_kv_scale_group_cycles) +
-         bank_pv_groups *
-             (config.pe.p8v2_lut_group_cycles +
-              config.pe.cached_kv_scale_group_cycles)) /
-        config.topology.pe_per_bank;
     const double bank_q8k8_vdot_cycles =
         bank_score_groups * config.pe.q8k8_group_cycles /
         config.topology.pe_per_bank;
@@ -2233,9 +2260,18 @@ QueryResult SimulateQuery(const SimulationConfig& config,
     const double bank_p8v2_lut_cycles = bank_pv_groups *
                                         config.pe.p8v2_lut_group_cycles /
                                         config.topology.pe_per_bank;
+    const double bank_kv_lut_cycles =
+        bank_q8k2_lut_cycles + bank_p8v2_lut_cycles;
     const double bank_kv_scale_cycles = (bank_qk_groups + bank_pv_groups) *
                                         config.pe.cached_kv_scale_group_cycles /
                                         config.topology.pe_per_bank;
+    const double bank_kv_unoverlapped_cycles =
+        bank_kv_lut_cycles + bank_kv_scale_cycles;
+    const double bank_kv_overlap_hidden_cycles =
+        config.pe.cached_kv_lut_scale_overlap *
+        std::min(bank_kv_lut_cycles, bank_kv_scale_cycles);
+    const double bank_kv_cycles =
+        bank_kv_unoverlapped_cycles - bank_kv_overlap_hidden_cycles;
     if (bank_score_cycles > score_cycles) {
       result.score_bottleneck_bank = bank;
     }
@@ -2244,6 +2280,12 @@ QueryResult SimulateQuery(const SimulationConfig& config,
     }
     if (bank_kv_cycles > kv_cycles) {
       result.cached_kv_bottleneck_bank = bank;
+      result.cached_kv_critical_lut_cycles = bank_kv_lut_cycles;
+      result.cached_kv_critical_scale_cycles = bank_kv_scale_cycles;
+      result.cached_kv_unoverlapped_cycles =
+          bank_kv_unoverlapped_cycles;
+      result.cached_kv_overlap_hidden_cycles =
+          bank_kv_overlap_hidden_cycles;
     }
     score_cycles = std::max(score_cycles, bank_score_cycles);
     message_cycles = std::max(message_cycles, bank_message_cycles);
@@ -2490,17 +2532,28 @@ QueryResult SimulateQuery(const SimulationConfig& config,
                  result.global_reduce_cycles * global_effective_lanes *
                      config.reducer
                          .global_throughput_groups_per_cycle_per_lane);
-  SetBottleneck(
-      result,
-      {{"pim_q8k8_vdot", result.q8k8_vdot_cycles},
-       {"pim_gnn_score_scale", result.gnn_score_scale_cycles},
-       {"pim_p8v8_vmul", result.p8v8_vmul_cycles},
-       {"pim_gnn_value_scale", result.gnn_value_scale_cycles},
-       {"pim_local_vadd", result.local_vadd_cycles},
-       {"pim_q8k2_lut", result.q8k2_lut_cycles},
-       {"pim_p8v2_lut", result.p8v2_lut_cycles},
-       {"pim_cached_kv_scale", result.cached_kv_scale_cycles},
-       {"pim_pc_reduce", result.pc_reduce_cycles},
+  std::vector<std::pair<std::string, double>> bottleneck_stages = {
+      {"pim_q8k8_vdot", result.q8k8_vdot_cycles},
+      {"pim_gnn_score_scale", result.gnn_score_scale_cycles},
+      {"pim_p8v8_vmul", result.p8v8_vmul_cycles},
+      {"pim_gnn_value_scale", result.gnn_value_scale_cycles},
+      {"pim_local_vadd", result.local_vadd_cycles}};
+  if (config.pe.cached_kv_lut_scale_overlap > 0.0) {
+    bottleneck_stages.push_back(
+        {"pim_cached_kv_scale", result.cached_kv_critical_scale_cycles});
+    bottleneck_stages.push_back(
+        {"pim_cached_kv_lut", result.cached_kv_critical_lut_cycles});
+  } else {
+    bottleneck_stages.push_back(
+        {"pim_q8k2_lut", result.q8k2_lut_cycles});
+    bottleneck_stages.push_back(
+        {"pim_p8v2_lut", result.p8v2_lut_cycles});
+    bottleneck_stages.push_back(
+        {"pim_cached_kv_scale", result.cached_kv_scale_cycles});
+  }
+  bottleneck_stages.insert(
+      bottleneck_stages.end(),
+      {{"pim_pc_reduce", result.pc_reduce_cycles},
        {"pim_global_reduce", result.global_reduce_cycles},
        {"q_broadcast_communication", result.q_broadcast_cycles},
        {"bank_to_pc_communication",
@@ -2510,6 +2563,7 @@ QueryResult SimulateQuery(const SimulationConfig& config,
        {"global_to_npu_communication",
         result.global_to_npu_communication_cycles},
        {"scheduling", result.scheduling_cycles}});
+  SetBottleneck(result, bottleneck_stages);
   return result;
 }
 
@@ -2578,7 +2632,10 @@ void WritePerQueryCSV(const std::string& path,
          "gnn_value_scale_cycles,local_vadd_input_edge_groups,"
          "local_vadd_initialization_groups,local_vadd_operation_groups,"
          "local_vadd_cycles,q8k2_lut_cycles,"
-         "p8v2_lut_cycles,cached_kv_scale_cycles,pc_reduce_cycles,"
+         "p8v2_lut_cycles,cached_kv_scale_cycles,"
+         "cached_kv_lut_scale_overlap,cached_kv_critical_lut_cycles,"
+         "cached_kv_critical_scale_cycles,cached_kv_unoverlapped_cycles,"
+         "cached_kv_overlap_hidden_cycles,pc_reduce_cycles,"
          "global_reduce_cycles,h100_cache_read_cycles,"
          "h100_int2_unpack_cycles,h100_scale_dequant_cycles,"
          "h100_layout_conversion_cycles,"
@@ -2682,7 +2739,13 @@ void WritePerQueryCSV(const std::string& path,
         << "," << r.local_vadd_initialization_groups << ","
         << r.local_vadd_operation_groups << "," << r.local_vadd_cycles << ","
         << r.q8k2_lut_cycles << "," << r.p8v2_lut_cycles << ","
-        << r.cached_kv_scale_cycles << "," << r.pc_reduce_cycles << ","
+        << r.cached_kv_scale_cycles << ","
+        << r.cached_kv_lut_scale_overlap << ","
+        << r.cached_kv_critical_lut_cycles << ","
+        << r.cached_kv_critical_scale_cycles << ","
+        << r.cached_kv_unoverlapped_cycles << ","
+        << r.cached_kv_overlap_hidden_cycles << "," << r.pc_reduce_cycles
+        << ","
         << r.global_reduce_cycles << "," << r.h100_cache_read_cycles << ","
         << r.h100_int2_unpack_cycles << "," << r.h100_scale_dequant_cycles
         << "," << r.h100_layout_conversion_cycles << ","
@@ -2870,6 +2933,11 @@ void WriteAggregateCSV(const std::string& path,
          "mean_local_vadd_operation_groups,mean_local_vadd_cycles,"
          "mean_q8k2_lut_cycles,"
          "mean_p8v2_lut_cycles,mean_cached_kv_scale_cycles,"
+         "mean_cached_kv_lut_scale_overlap,"
+         "mean_cached_kv_critical_lut_cycles,"
+         "mean_cached_kv_critical_scale_cycles,"
+         "mean_cached_kv_unoverlapped_cycles,"
+         "mean_cached_kv_overlap_hidden_cycles,"
          "mean_pc_reduce_cycles,mean_global_reduce_cycles,"
          "mean_h100_cache_read_cycles,mean_h100_int2_unpack_cycles,"
          "mean_h100_scale_dequant_cycles,"
@@ -3166,6 +3234,21 @@ void WriteAggregateCSV(const std::string& path,
                   << ","
                   << MeanResultField(group,
                                      &QueryResult::cached_kv_scale_cycles)
+                  << ","
+                  << MeanResultField(
+                         group, &QueryResult::cached_kv_lut_scale_overlap)
+                  << ","
+                  << MeanResultField(
+                         group, &QueryResult::cached_kv_critical_lut_cycles)
+                  << ","
+                  << MeanResultField(
+                         group, &QueryResult::cached_kv_critical_scale_cycles)
+                  << ","
+                  << MeanResultField(
+                         group, &QueryResult::cached_kv_unoverlapped_cycles)
+                  << ","
+                  << MeanResultField(
+                         group, &QueryResult::cached_kv_overlap_hidden_cycles)
                   << ","
                   << MeanResultField(group, &QueryResult::pc_reduce_cycles)
                   << ","

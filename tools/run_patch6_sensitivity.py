@@ -51,6 +51,11 @@ PARAMETERS = {
         1.0,
         "cycles/group",
     ),
+    "near_bank_pe.cached_kv_lut_scale_overlap": (
+        "cached_kv_lut_scale_overlap",
+        0.0,
+        "fraction",
+    ),
     "communication.q_broadcast_bandwidth_bytes_per_cycle_per_bank": (
         "q_broadcast_bw",
         64.0,
@@ -126,6 +131,11 @@ PER_QUERY_COLUMNS = {
     "bank_to_pc_total_bytes",
     "cached_kv_cycles",
     "cached_kv_scale_cycles",
+    "cached_kv_lut_scale_overlap",
+    "cached_kv_critical_lut_cycles",
+    "cached_kv_critical_scale_cycles",
+    "cached_kv_unoverlapped_cycles",
+    "cached_kv_overlap_hidden_cycles",
     "q8k2_lut_cycles",
     "p8v2_lut_cycles",
     "q8k8_vdot_cycles",
@@ -196,6 +206,17 @@ def make_scenarios() -> tuple[Scenario, ...]:
     scenarios = [
         Scenario("base", "reference", "Patch 5 base assumptions", base_values())
     ]
+    for name, overlap in (("overlap_half", 0.5), ("overlap_full", 1.0)):
+        values = base_values()
+        values["near_bank_pe.cached_kv_lut_scale_overlap"] = overlap
+        scenarios.append(
+            Scenario(
+                name,
+                "execution_overlap",
+                f"cached-KV LUT/scale overlap={overlap:g}",
+                values,
+            )
+        )
     factors = (("fast", 0.5), ("slow", 2.0))
     cycle_groups = (
         ("cached_scale", CACHED_SCALE_PARAMETERS),
@@ -233,25 +254,28 @@ def make_scenarios() -> tuple[Scenario, ...]:
     all_cycle_groups = (
         CACHED_SCALE_PARAMETERS | INT2_PARAMETERS | GNN_PIPELINE_PARAMETERS | VADD_PARAMETERS
     )
+    optimistic = scaled_values(
+        (all_cycle_groups, COMMUNICATION_PARAMETERS, REDUCER_PARAMETERS),
+        (0.5, 2.0, 2.0),
+    )
+    optimistic["near_bank_pe.cached_kv_lut_scale_overlap"] = 1.0
+    conservative = scaled_values(
+        (all_cycle_groups, COMMUNICATION_PARAMETERS, REDUCER_PARAMETERS),
+        (2.0, 0.5, 0.5),
+    )
     scenarios.extend(
         (
             Scenario(
                 "optimistic_joint",
                 "joint_envelope",
-                "cycle costs x0.5 and bandwidth/throughput x2",
-                scaled_values(
-                    (all_cycle_groups, COMMUNICATION_PARAMETERS, REDUCER_PARAMETERS),
-                    (0.5, 2.0, 2.0),
-                ),
+                "cycle costs x0.5, full LUT/scale overlap, and bandwidth/throughput x2",
+                optimistic,
             ),
             Scenario(
                 "conservative_joint",
                 "joint_envelope",
-                "cycle costs x2 and bandwidth/throughput x0.5",
-                scaled_values(
-                    (all_cycle_groups, COMMUNICATION_PARAMETERS, REDUCER_PARAMETERS),
-                    (2.0, 0.5, 0.5),
-                ),
+                "cycle costs x2, no LUT/scale overlap, and bandwidth/throughput x0.5",
+                conservative,
             ),
         )
     )
@@ -359,6 +383,11 @@ def validate_outputs(
     queries_per_workload: int,
     scenario: str,
 ) -> None:
+    expected_overlap = next(
+        candidate.values["near_bank_pe.cached_kv_lut_scale_overlap"]
+        for candidate in SCENARIOS
+        if candidate.name == scenario
+    )
     expected_per_query = len(workloads) * queries_per_workload * 2
     expected_aggregate = len(workloads) * 2
     if len(per_query) != expected_per_query or any(
@@ -383,6 +412,31 @@ def validate_outputs(
         for row in per_query
     ):
         raise SensitivityError(f"{scenario}: test or non-trace row leaked into output")
+
+    for row in per_query:
+        overlap = number(row, "cached_kv_lut_scale_overlap")
+        critical_lut = number(row, "cached_kv_critical_lut_cycles")
+        critical_scale = number(row, "cached_kv_critical_scale_cycles")
+        unoverlapped = number(row, "cached_kv_unoverlapped_cycles")
+        hidden = number(row, "cached_kv_overlap_hidden_cycles")
+        effective = number(row, "cached_kv_cycles")
+        if not math.isclose(overlap, expected_overlap, rel_tol=0.0, abs_tol=1e-9):
+            raise SensitivityError(f"{scenario}: cached-KV overlap override mismatch")
+        if not math.isclose(
+            unoverlapped, critical_lut + critical_scale, rel_tol=0.0, abs_tol=1e-6
+        ):
+            raise SensitivityError(f"{scenario}: cached-KV raw-cycle identity failed")
+        if not math.isclose(
+            hidden,
+            overlap * min(critical_lut, critical_scale),
+            rel_tol=0.0,
+            abs_tol=1e-6,
+        ):
+            raise SensitivityError(f"{scenario}: cached-KV hidden-cycle identity failed")
+        if not math.isclose(
+            effective, unoverlapped - hidden, rel_tol=0.0, abs_tol=1e-6
+        ):
+            raise SensitivityError(f"{scenario}: cached-KV effective-cycle identity failed")
 
     for workload in workloads:
         baseline_keys: set[tuple[str, str]] | None = None
@@ -452,6 +506,8 @@ def metric_row(
     dominant, dominant_count = Counter(
         row["bottleneck_stage"] for row in local
     ).most_common(1)[0]
+    mean_cached_kv_unoverlapped = mean(local, "cached_kv_unoverlapped_cycles")
+    mean_cached_kv_hidden = mean(local, "cached_kv_overlap_hidden_cycles")
     result: dict[str, str | int | float] = {
         "scenario": scenario.name,
         "category": scenario.category,
@@ -467,6 +523,19 @@ def metric_row(
         "mean_reducer_cycles": mean(local, "reducer_cycles"),
         "mean_cached_kv_cycles": mean(local, "cached_kv_cycles"),
         "mean_cached_kv_scale_cycles": mean(local, "cached_kv_scale_cycles"),
+        "mean_cached_kv_critical_lut_cycles": mean(
+            local, "cached_kv_critical_lut_cycles"
+        ),
+        "mean_cached_kv_critical_scale_cycles": mean(
+            local, "cached_kv_critical_scale_cycles"
+        ),
+        "mean_cached_kv_unoverlapped_cycles": mean_cached_kv_unoverlapped,
+        "mean_cached_kv_overlap_hidden_cycles": mean_cached_kv_hidden,
+        "cached_kv_overlap_cycle_reduction": (
+            mean_cached_kv_hidden / mean_cached_kv_unoverlapped
+            if mean_cached_kv_unoverlapped > 0.0
+            else 0.0
+        ),
         "mean_q8k2_lut_cycles": mean(local, "q8k2_lut_cycles"),
         "mean_p8v2_lut_cycles": mean(local, "p8v2_lut_cycles"),
         "mean_q8k8_vdot_cycles": mean(local, "q8k8_vdot_cycles"),
@@ -512,13 +581,19 @@ def write_parameter_manifest(path: Path) -> None:
     rows = []
     for key, (_, base, unit) in PARAMETERS.items():
         cycles = key in CYCLE_PARAMETERS
+        if unit == "fraction":
+            optimistic = 1.0
+            conservative = 0.0
+        else:
+            optimistic = base * (0.5 if cycles else 2.0)
+            conservative = base * (2.0 if cycles else 0.5)
         rows.append(
             {
                 "parameter": key,
                 "unit": unit,
-                "optimistic_value": base * (0.5 if cycles else 2.0),
+                "optimistic_value": optimistic,
                 "base_value": base,
-                "conservative_value": base * (2.0 if cycles else 0.5),
+                "conservative_value": conservative,
                 "calibration_status": "uncalibrated_assumption",
                 "source_note": "Patch 6 sensitivity envelope; replace with measured or published value",
             }
@@ -656,7 +731,8 @@ def main() -> None:
     print("\nPatch 6 validation-only sensitivity summary")
     print(
         "scenario mean_ms p95_ms change_vs_base local_latency_reduction "
-        "local_faster_queries stall bottleneck bottleneck_fraction"
+        "local_faster_queries stall overlap hidden_kv bottleneck "
+        "bottleneck_fraction"
     )
     for row in overall_rows:
         print(
@@ -667,6 +743,8 @@ def main() -> None:
             f"{float(row['local_latency_reduction_vs_no_local']):>23.4%} "
             f"{float(row['local_faster_query_fraction']):>20.2%} "
             f"{float(row['mean_traffic_stall_fraction']):>6.2%} "
+            f"{float(row['cached_kv_lut_scale_overlap']):>7.2f} "
+            f"{float(row['cached_kv_overlap_cycle_reduction']):>9.2%} "
             f"{row['dominant_bottleneck_stage']} "
             f"{float(row['bottleneck_query_fraction']):.2%}"
         )

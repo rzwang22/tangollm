@@ -80,8 +80,8 @@ def check_valid_run(binary: Path) -> None:
         aggregate = load_rows(directory / "aggregate.csv")
         assert len(per_query) == 32
         assert len(aggregate) == 32
-        assert len(per_query[0]) == 184
-        assert len(aggregate[0]) == 169
+        assert len(per_query[0]) == 189
+        assert len(aggregate[0]) == 174
         assert all(
             None not in row and all(value is not None for value in row.values())
             for row in per_query
@@ -141,6 +141,11 @@ def check_valid_run(binary: Path) -> None:
             "local_vadd_input_edge_groups",
             "local_vadd_initialization_groups",
             "local_vadd_operation_groups",
+            "cached_kv_lut_scale_overlap",
+            "cached_kv_critical_lut_cycles",
+            "cached_kv_critical_scale_cycles",
+            "cached_kv_unoverlapped_cycles",
+            "cached_kv_overlap_hidden_cycles",
         }
         assert required_columns <= set(per_query[0])
 
@@ -487,7 +492,8 @@ def check_patch6_run(binary: Path) -> None:
                 "scale_group_cycles: 1",
                 "scale_group_cycles: 1\n"
                 "  gnn_scale_group_cycles: 1\n"
-                "  cached_kv_scale_group_cycles: 1",
+                "  cached_kv_scale_group_cycles: 1\n"
+                "  cached_kv_lut_scale_overlap: 0",
             )
             .replace("memory_token_tiles: [1, 4]", "memory_token_tiles: [4]")
             .replace(
@@ -512,6 +518,49 @@ def check_patch6_run(binary: Path) -> None:
             row
             for row in base_rows
             if row["baseline"] == "pim_selective_kv_local_combine"
+        )
+        assert_close(base_local["cached_kv_lut_scale_overlap"], 0)
+        assert_close(base_local["cached_kv_overlap_hidden_cycles"], 0)
+        assert_close(
+            base_local["cached_kv_unoverlapped_cycles"],
+            float(base_local["cached_kv_cycles"]),
+        )
+        assert_close(
+            base_local["cached_kv_unoverlapped_cycles"],
+            float(base_local["cached_kv_critical_lut_cycles"])
+            + float(base_local["cached_kv_critical_scale_cycles"]),
+        )
+
+        overlap_completed = run_simulator(
+            binary,
+            config,
+            ("near_bank_pe.cached_kv_lut_scale_overlap=0.5",),
+        )
+        assert overlap_completed.returncode == 0, overlap_completed.stdout
+        overlap_local = next(
+            row
+            for row in load_rows(directory / "per_query.csv")
+            if row["baseline"] == "pim_selective_kv_local_combine"
+        )
+        assert_close(overlap_local["cached_kv_lut_scale_overlap"], 0.5)
+        assert_close(
+            overlap_local["cached_kv_unoverlapped_cycles"],
+            float(base_local["cached_kv_unoverlapped_cycles"]),
+        )
+        expected_hidden = 0.5 * min(
+            float(overlap_local["cached_kv_critical_lut_cycles"]),
+            float(overlap_local["cached_kv_critical_scale_cycles"]),
+        )
+        assert_close(
+            overlap_local["cached_kv_overlap_hidden_cycles"], expected_hidden
+        )
+        assert_close(
+            overlap_local["cached_kv_cycles"],
+            float(overlap_local["cached_kv_unoverlapped_cycles"])
+            - expected_hidden,
+        )
+        assert float(overlap_local["cached_kv_cycles"]) < float(
+            base_local["cached_kv_cycles"]
         )
 
         slow_completed = run_simulator(
@@ -549,6 +598,11 @@ def check_patch6_run(binary: Path) -> None:
         )
         assert zero_completed.returncode != 0
         assert "positive finite number" in zero_completed.stdout
+        invalid_overlap_completed = run_simulator(
+            binary, config, ("near_bank_pe.cached_kv_lut_scale_overlap=1.1",)
+        )
+        assert invalid_overlap_completed.returncode != 0
+        assert "within [0,1]" in invalid_overlap_completed.stdout
 
         sensitivity_directory = directory / "sensitivity"
         sensitivity_completed = subprocess.run(
@@ -578,7 +632,13 @@ def check_patch6_run(binary: Path) -> None:
             sensitivity_directory / "patch6_sensitivity_overall.csv"
         )
         by_scenario = {row["scenario"]: row for row in overall}
-        assert len(overall) == 15
+        assert len(overall) == 17
+        assert float(by_scenario["overlap_half"]["mean_latency_ns"]) < float(
+            by_scenario["base"]["mean_latency_ns"]
+        )
+        assert float(by_scenario["overlap_full"]["mean_latency_ns"]) < float(
+            by_scenario["overlap_half"]["mean_latency_ns"]
+        )
         assert float(by_scenario["cached_scale_fast"]["mean_latency_ns"]) < float(
             by_scenario["base"]["mean_latency_ns"]
         )
@@ -593,10 +653,10 @@ def check_patch6_run(binary: Path) -> None:
         )
         assert len(
             load_rows(sensitivity_directory / "patch6_sensitivity_by_workload.csv")
-        ) == 15
+        ) == 17
         assert len(
             load_rows(sensitivity_directory / "patch6_parameter_manifest.csv")
-        ) == 15
+        ) == 16
 
 
 def main() -> None:
@@ -609,7 +669,7 @@ def main() -> None:
     check_valid_run(binary)
     check_negative_cases(binary)
     check_patch6_run(binary)
-    print("Patch 5/6 analytical tests passed: valid=6, negative=9")
+    print("Patch 5/6 analytical tests passed: valid=7, negative=10")
 
 
 if __name__ == "__main__":

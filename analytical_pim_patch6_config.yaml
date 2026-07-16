@@ -55,6 +55,7 @@ near_bank_pe:
   scale_group_cycles: 1
   gnn_scale_group_cycles: 1
   cached_kv_scale_group_cycles: 1
+  cached_kv_lut_scale_overlap: 0
   softmax_group_cycles: 1
   scheduling_overhead_per_tile_cycles: 16
   clock_ns: 1.0
