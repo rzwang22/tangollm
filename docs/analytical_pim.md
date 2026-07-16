@@ -25,6 +25,44 @@ never aggregated together: validation rows have
 `evaluation_role=final_evaluation`. Configuration choices must be made from
 validation output and then applied unchanged to test output.
 
+## Frozen Trace Evaluation
+
+After the validation sweep, the selected PIM-internal configuration is frozen
+in `analytical_pim_trace_final_config.yaml`:
+
+```text
+graph compute placement = source_dst_locality
+KV storage placement = balanced
+memory token tile = 4
+design = local combine
+comparator = no local combine
+```
+
+The final config retains validation for distribution-shift reporting and test
+for final evaluation, but it contains no remaining placement or tile sweep. It
+produces 2,000 per-query rows and 20 aggregate rows for the five formal tasks.
+Run it from the build directory and validate the result with:
+
+```bash
+./analytical_pim analytical_pim_trace_final_config.yaml \
+  | tee final_trace_evaluation.log
+
+python3 ../tools/analyze_gofa_trace_final.py \
+  --per-query ../data/analytical_pim_trace_final_per_query.csv \
+  --aggregate ../data/analytical_pim_trace_final_aggregate.csv \
+  --output ../data/analytical_pim_trace_final_summary.csv \
+  --require-final-only
+```
+
+The analyzer checks row counts, evaluation roles, trace ordering, equality of
+the query sets compared by the two PIM baselines, aggregate/per-query
+consistency, corrected VADD semantics, and local-buffer capacity. It reports
+test mean/p50/p95 latency, local-combine traffic and reducer reductions,
+validation-to-test shift, buffer use, traffic stalls, and the dominant modeled
+bottleneck. The `__all__` row computes exact percentiles over all 500 test
+queries rather than averaging per-workload percentiles. The report is a
+PIM-internal comparison and must not be presented as PIM/H100 speedup.
+
 For formal traces, the simulator directly consumes:
 
 - sampled graph structure and NOG metadata;

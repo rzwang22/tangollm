@@ -8,6 +8,7 @@ import csv
 import json
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Callable
@@ -17,6 +18,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_ROOT = REPOSITORY_ROOT / "tests/fixtures/gofa_trace_v1"
 CONFIG_TEMPLATE = REPOSITORY_ROOT / "tests/analytical_pim_trace_fixture_config.yaml"
 TASK_DIRECTORY = "fixture_task_formal_v1"
+FINAL_ANALYZER = REPOSITORY_ROOT / "tools/analyze_gofa_trace_final.py"
 
 
 def write_config(directory: Path, trace_root: Path) -> Path:
@@ -264,6 +266,88 @@ def check_valid_run(binary: Path) -> None:
             ),
         )
 
+        final_config = directory / "final_config.yaml"
+        final_config.write_text(
+            config.read_text()
+            .replace("memory_token_tiles: [1, 4]", "memory_token_tiles: [4]")
+            .replace(
+                "graph_compute_placement_sweep: [hash, hybrid_locality_balanced]",
+                "graph_compute_placement_sweep: [source_dst_locality]",
+            )
+            .replace(
+                "kv_storage_placement_sweep: [hash, balanced]",
+                "kv_storage_placement_sweep: [balanced]",
+            )
+        )
+        final_completed = run_simulator(binary, final_config)
+        assert final_completed.returncode == 0, final_completed.stdout
+        final_per_query = load_rows(directory / "per_query.csv")
+        final_aggregate = load_rows(directory / "aggregate.csv")
+        assert len(final_per_query) == 4
+        assert len(final_aggregate) == 4
+
+        summary_path = directory / "final_summary.csv"
+        analyzer_command = [
+            sys.executable,
+            str(FINAL_ANALYZER),
+            "--per-query",
+            str(directory / "per_query.csv"),
+            "--aggregate",
+            str(directory / "aggregate.csv"),
+            "--output",
+            str(summary_path),
+            "--expected-workloads",
+            "fixture_task",
+            "--expected-queries-per-split",
+            "1",
+            "--require-final-only",
+        ]
+        analysis_completed = subprocess.run(
+            analyzer_command,
+            cwd=REPOSITORY_ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        assert analysis_completed.returncode == 0, analysis_completed.stdout
+        assert "Final trace checks passed: queries=2" in analysis_completed.stdout
+        summary_rows = load_rows(summary_path)
+        assert len(summary_rows) == 2
+        assert summary_rows[0]["workload"] == "fixture_task"
+        assert summary_rows[0]["query_count"] == "1"
+        assert summary_rows[1]["workload"] == "__all__"
+        assert summary_rows[1]["query_count"] == "1"
+
+        corrupt_path = directory / "corrupt_per_query.csv"
+        corrupt_rows = final_per_query.copy()
+        corrupt_row = next(
+            row
+            for row in corrupt_rows
+            if row["baseline"] == "pim_selective_kv_local_combine"
+        )
+        corrupt_row["local_vadd_operation_groups"] = str(
+            float(corrupt_row["local_vadd_operation_groups"]) + 1
+        )
+        with corrupt_path.open("w", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=list(corrupt_rows[0]))
+            writer.writeheader()
+            writer.writerows(corrupt_rows)
+        corrupt_command = analyzer_command.copy()
+        corrupt_command[corrupt_command.index(str(directory / "per_query.csv"))] = str(
+            corrupt_path
+        )
+        corrupt_completed = subprocess.run(
+            corrupt_command,
+            cwd=REPOSITORY_ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        assert corrupt_completed.returncode != 0
+        assert "VADD count identity failed" in corrupt_completed.stdout
+
         config.write_text(
             config.read_text().replace(
                 "capacity_bytes_per_bank: 4096",
@@ -392,7 +476,7 @@ def main() -> None:
         raise SystemExit(f"Missing analytical_pim binary: {binary}")
     check_valid_run(binary)
     check_negative_cases(binary)
-    print("Patch 5 buffer/VADD tests passed: valid=2, negative=6")
+    print("Patch 5 trace/final-analysis tests passed: valid=3, negative=7")
 
 
 if __name__ == "__main__":

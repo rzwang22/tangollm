@@ -30,3 +30,4 @@ configure_file(dram_config_HBM3E_192GB.yaml ${EXECUTABLE_OUTPUT_PATH}/dram_confi
 configure_file(config.yaml ${EXECUTABLE_OUTPUT_PATH}/config.yaml COPYONLY)
 configure_file(analytical_pim_config.yaml ${EXECUTABLE_OUTPUT_PATH}/analytical_pim_config.yaml COPYONLY)
 configure_file(analytical_pim_trace_config.yaml ${EXECUTABLE_OUTPUT_PATH}/analytical_pim_trace_config.yaml COPYONLY)
+configure_file(analytical_pim_trace_final_config.yaml ${EXECUTABLE_OUTPUT_PATH}/analytical_pim_trace_final_config.yaml COPYONLY)
