@@ -1,0 +1,1573 @@
+{
+  "batch_size": 1,
+  "cache_item_inventory": [
+    {
+      "cache_eligible": true,
+      "cache_key": "fixture-key-35",
+      "is_nog": false,
+      "item_index": 0,
+      "item_type": "node",
+      "key_bits": 2,
+      "memory_bits": 4,
+      "memory_shape": [
+        128,
+        4096
+      ],
+      "sequence_length": 131,
+      "text_kv_shapes": [
+        {
+          "key_shape": [
+            8,
+            3,
+            128
+          ],
+          "layer_id": 26,
+          "value_shape": [
+            8,
+            3,
+            128
+          ]
+        },
+        {
+          "key_shape": [
+            8,
+            3,
+            128
+          ],
+          "layer_id": 27,
+          "value_shape": [
+            8,
+            3,
+            128
+          ]
+        },
+        {
+          "key_shape": [
+            8,
+            3,
+            128
+          ],
+          "layer_id": 28,
+          "value_shape": [
+            8,
+            3,
+            128
+          ]
+        },
+        {
+          "key_shape": [
+            8,
+            3,
+            128
+          ],
+          "layer_id": 29,
+          "value_shape": [
+            8,
+            3,
+            128
+          ]
+        },
+        {
+          "key_shape": [
+            8,
+            3,
+            128
+          ],
+          "layer_id": 30,
+          "value_shape": [
+            8,
+            3,
+            128
+          ]
+        },
+        {
+          "key_shape": [
+            8,
+            3,
+            128
+          ],
+          "layer_id": 31,
+          "value_shape": [
+            8,
+            3,
+            128
+          ]
+        }
+      ],
+      "text_length": 3,
+      "value_bits": 2
+    },
+    {
+      "cache_eligible": true,
+      "cache_key": "fixture-key-1",
+      "is_nog": false,
+      "item_index": 1,
+      "item_type": "node",
+      "key_bits": 2,
+      "memory_bits": 4,
+      "memory_shape": [
+        128,
+        4096
+      ],
+      "sequence_length": 133,
+      "text_kv_shapes": [
+        {
+          "key_shape": [
+            8,
+            5,
+            128
+          ],
+          "layer_id": 26,
+          "value_shape": [
+            8,
+            5,
+            128
+          ]
+        },
+        {
+          "key_shape": [
+            8,
+            5,
+            128
+          ],
+          "layer_id": 27,
+          "value_shape": [
+            8,
+            5,
+            128
+          ]
+        },
+        {
+          "key_shape": [
+            8,
+            5,
+            128
+          ],
+          "layer_id": 28,
+          "value_shape": [
+            8,
+            5,
+            128
+          ]
+        },
+        {
+          "key_shape": [
+            8,
+            5,
+            128
+          ],
+          "layer_id": 29,
+          "value_shape": [
+            8,
+            5,
+            128
+          ]
+        },
+        {
+          "key_shape": [
+            8,
+            5,
+            128
+          ],
+          "layer_id": 30,
+          "value_shape": [
+            8,
+            5,
+            128
+          ]
+        },
+        {
+          "key_shape": [
+            8,
+            5,
+            128
+          ],
+          "layer_id": 31,
+          "value_shape": [
+            8,
+            5,
+            128
+          ]
+        }
+      ],
+      "text_length": 5,
+      "value_bits": 2
+    },
+    {
+      "cache_eligible": false,
+      "cache_key": "fixture-key-2",
+      "is_nog": true,
+      "item_index": 2,
+      "item_type": "NOG",
+      "key_bits": 2,
+      "memory_bits": 4,
+      "memory_shape": [
+        128,
+        4096
+      ],
+      "sequence_length": 135,
+      "text_kv_shapes": [
+        {
+          "key_shape": [
+            8,
+            7,
+            128
+          ],
+          "layer_id": 26,
+          "value_shape": [
+            8,
+            7,
+            128
+          ]
+        },
+        {
+          "key_shape": [
+            8,
+            7,
+            128
+          ],
+          "layer_id": 27,
+          "value_shape": [
+            8,
+            7,
+            128
+          ]
+        },
+        {
+          "key_shape": [
+            8,
+            7,
+            128
+          ],
+          "layer_id": 28,
+          "value_shape": [
+            8,
+            7,
+            128
+          ]
+        },
+        {
+          "key_shape": [
+            8,
+            7,
+            128
+          ],
+          "layer_id": 29,
+          "value_shape": [
+            8,
+            7,
+            128
+          ]
+        },
+        {
+          "key_shape": [
+            8,
+            7,
+            128
+          ],
+          "layer_id": 30,
+          "value_shape": [
+            8,
+            7,
+            128
+          ]
+        },
+        {
+          "key_shape": [
+            8,
+            7,
+            128
+          ],
+          "layer_id": 31,
+          "value_shape": [
+            8,
+            7,
+            128
+          ]
+        }
+      ],
+      "text_length": 7,
+      "value_bits": 2
+    },
+    {
+      "cache_eligible": true,
+      "cache_key": "fixture-key-40",
+      "is_nog": false,
+      "item_index": 3,
+      "item_type": "edge",
+      "key_bits": 2,
+      "memory_bits": 4,
+      "memory_shape": [
+        128,
+        4096
+      ],
+      "sequence_length": 139,
+      "text_kv_shapes": [
+        {
+          "key_shape": [
+            8,
+            11,
+            128
+          ],
+          "layer_id": 26,
+          "value_shape": [
+            8,
+            11,
+            128
+          ]
+        },
+        {
+          "key_shape": [
+            8,
+            11,
+            128
+          ],
+          "layer_id": 27,
+          "value_shape": [
+            8,
+            11,
+            128
+          ]
+        },
+        {
+          "key_shape": [
+            8,
+            11,
+            128
+          ],
+          "layer_id": 28,
+          "value_shape": [
+            8,
+            11,
+            128
+          ]
+        },
+        {
+          "key_shape": [
+            8,
+            11,
+            128
+          ],
+          "layer_id": 29,
+          "value_shape": [
+            8,
+            11,
+            128
+          ]
+        },
+        {
+          "key_shape": [
+            8,
+            11,
+            128
+          ],
+          "layer_id": 30,
+          "value_shape": [
+            8,
+            11,
+            128
+          ]
+        },
+        {
+          "key_shape": [
+            8,
+            11,
+            128
+          ],
+          "layer_id": 31,
+          "value_shape": [
+            8,
+            11,
+            128
+          ]
+        }
+      ],
+      "text_length": 11,
+      "value_bits": 2
+    }
+  ],
+  "cache_mode": "memory_kv",
+  "cache_tag": "fixture",
+  "created_at": "2026-07-16T00:00:00",
+  "dataset_name": "fixture_dataset",
+  "model_configuration": {
+    "gnn_start_layer": 26,
+    "head_dim": 128,
+    "hidden_size": 4096,
+    "mem_size": 128,
+    "num_attention_heads": 32,
+    "num_key_value_heads": 8,
+    "suffix_layer_ids": [
+      26,
+      27,
+      28,
+      29,
+      30,
+      31
+    ]
+  },
+  "query_graph_structure": {
+    "batch": [
+      0,
+      0
+    ],
+    "edge_index": [
+      [
+        0,
+        1
+      ],
+      [
+        1,
+        0
+      ]
+    ],
+    "edge_map": [
+      0,
+      0
+    ],
+    "edge_map_semantics": "structural_edge_to_edge_text_item",
+    "node_map": [
+      0,
+      2
+    ],
+    "node_map_semantics": "graph_local_node_to_encoder_text_item",
+    "nog_local_index": 1,
+    "nog_local_indices": [
+      1
+    ],
+    "num_edge_text_items": 1,
+    "num_graph_nodes": 2,
+    "num_node_text_items": 3,
+    "num_structural_edges": 2,
+    "ptr": [
+      0,
+      2
+    ],
+    "question_index": [
+      1
+    ],
+    "target_index": [
+      0
+    ]
+  },
+  "query_id": "query_000000",
+  "repository_commit_sha": "fixture",
+  "runtime_operation_shapes": {
+    "item_order": [
+      0,
+      2,
+      3
+    ],
+    "layers": [
+      {
+        "gnn": {
+          "edge_input_shape": [
+            2,
+            128,
+            4096
+          ],
+          "edge_output_shape": null,
+          "edge_output_status": "not_produced_by_gofa_gnn_layer",
+          "node_input_shape": [
+            2,
+            128,
+            4096
+          ],
+          "node_output_shape": [
+            2,
+            128,
+            4096
+          ]
+        },
+        "items": [
+          {
+            "attention_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "item_index": 0,
+            "mlp_input_shape": [
+              1,
+              128,
+              4096
+            ],
+            "mlp_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "pv_shape": [
+              1,
+              32,
+              128,
+              128
+            ],
+            "q_projection_input_shape": [
+              1,
+              128,
+              4096
+            ],
+            "q_projection_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "qk_shape": [
+              1,
+              32,
+              128,
+              131
+            ],
+            "runtime_item_index": 0,
+            "softmax_probability_shape": [
+              1,
+              32,
+              128,
+              131
+            ]
+          },
+          {
+            "attention_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "item_index": 2,
+            "mlp_input_shape": [
+              1,
+              128,
+              4096
+            ],
+            "mlp_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "pv_shape": [
+              1,
+              32,
+              128,
+              128
+            ],
+            "q_projection_input_shape": [
+              1,
+              128,
+              4096
+            ],
+            "q_projection_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "qk_shape": [
+              1,
+              32,
+              128,
+              135
+            ],
+            "runtime_item_index": 1,
+            "softmax_probability_shape": [
+              1,
+              32,
+              128,
+              135
+            ]
+          },
+          {
+            "attention_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "item_index": 3,
+            "mlp_input_shape": [
+              1,
+              128,
+              4096
+            ],
+            "mlp_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "pv_shape": [
+              1,
+              32,
+              128,
+              128
+            ],
+            "q_projection_input_shape": [
+              1,
+              128,
+              4096
+            ],
+            "q_projection_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "qk_shape": [
+              1,
+              32,
+              128,
+              139
+            ],
+            "runtime_item_index": 2,
+            "softmax_probability_shape": [
+              1,
+              32,
+              128,
+              139
+            ]
+          }
+        ],
+        "layer_id": 26
+      },
+      {
+        "gnn": {
+          "edge_input_shape": [
+            2,
+            128,
+            4096
+          ],
+          "edge_output_shape": null,
+          "edge_output_status": "not_produced_by_gofa_gnn_layer",
+          "node_input_shape": [
+            2,
+            128,
+            4096
+          ],
+          "node_output_shape": [
+            2,
+            128,
+            4096
+          ]
+        },
+        "items": [
+          {
+            "attention_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "item_index": 0,
+            "mlp_input_shape": [
+              1,
+              128,
+              4096
+            ],
+            "mlp_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "pv_shape": [
+              1,
+              32,
+              128,
+              128
+            ],
+            "q_projection_input_shape": [
+              1,
+              128,
+              4096
+            ],
+            "q_projection_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "qk_shape": [
+              1,
+              32,
+              128,
+              131
+            ],
+            "runtime_item_index": 0,
+            "softmax_probability_shape": [
+              1,
+              32,
+              128,
+              131
+            ]
+          },
+          {
+            "attention_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "item_index": 2,
+            "mlp_input_shape": [
+              1,
+              128,
+              4096
+            ],
+            "mlp_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "pv_shape": [
+              1,
+              32,
+              128,
+              128
+            ],
+            "q_projection_input_shape": [
+              1,
+              128,
+              4096
+            ],
+            "q_projection_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "qk_shape": [
+              1,
+              32,
+              128,
+              135
+            ],
+            "runtime_item_index": 1,
+            "softmax_probability_shape": [
+              1,
+              32,
+              128,
+              135
+            ]
+          },
+          {
+            "attention_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "item_index": 3,
+            "mlp_input_shape": [
+              1,
+              128,
+              4096
+            ],
+            "mlp_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "pv_shape": [
+              1,
+              32,
+              128,
+              128
+            ],
+            "q_projection_input_shape": [
+              1,
+              128,
+              4096
+            ],
+            "q_projection_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "qk_shape": [
+              1,
+              32,
+              128,
+              139
+            ],
+            "runtime_item_index": 2,
+            "softmax_probability_shape": [
+              1,
+              32,
+              128,
+              139
+            ]
+          }
+        ],
+        "layer_id": 27
+      },
+      {
+        "gnn": {
+          "edge_input_shape": [
+            2,
+            128,
+            4096
+          ],
+          "edge_output_shape": null,
+          "edge_output_status": "not_produced_by_gofa_gnn_layer",
+          "node_input_shape": [
+            2,
+            128,
+            4096
+          ],
+          "node_output_shape": [
+            2,
+            128,
+            4096
+          ]
+        },
+        "items": [
+          {
+            "attention_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "item_index": 0,
+            "mlp_input_shape": [
+              1,
+              128,
+              4096
+            ],
+            "mlp_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "pv_shape": [
+              1,
+              32,
+              128,
+              128
+            ],
+            "q_projection_input_shape": [
+              1,
+              128,
+              4096
+            ],
+            "q_projection_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "qk_shape": [
+              1,
+              32,
+              128,
+              131
+            ],
+            "runtime_item_index": 0,
+            "softmax_probability_shape": [
+              1,
+              32,
+              128,
+              131
+            ]
+          },
+          {
+            "attention_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "item_index": 2,
+            "mlp_input_shape": [
+              1,
+              128,
+              4096
+            ],
+            "mlp_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "pv_shape": [
+              1,
+              32,
+              128,
+              128
+            ],
+            "q_projection_input_shape": [
+              1,
+              128,
+              4096
+            ],
+            "q_projection_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "qk_shape": [
+              1,
+              32,
+              128,
+              135
+            ],
+            "runtime_item_index": 1,
+            "softmax_probability_shape": [
+              1,
+              32,
+              128,
+              135
+            ]
+          },
+          {
+            "attention_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "item_index": 3,
+            "mlp_input_shape": [
+              1,
+              128,
+              4096
+            ],
+            "mlp_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "pv_shape": [
+              1,
+              32,
+              128,
+              128
+            ],
+            "q_projection_input_shape": [
+              1,
+              128,
+              4096
+            ],
+            "q_projection_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "qk_shape": [
+              1,
+              32,
+              128,
+              139
+            ],
+            "runtime_item_index": 2,
+            "softmax_probability_shape": [
+              1,
+              32,
+              128,
+              139
+            ]
+          }
+        ],
+        "layer_id": 28
+      },
+      {
+        "gnn": {
+          "edge_input_shape": [
+            2,
+            128,
+            4096
+          ],
+          "edge_output_shape": null,
+          "edge_output_status": "not_produced_by_gofa_gnn_layer",
+          "node_input_shape": [
+            2,
+            128,
+            4096
+          ],
+          "node_output_shape": [
+            2,
+            128,
+            4096
+          ]
+        },
+        "items": [
+          {
+            "attention_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "item_index": 0,
+            "mlp_input_shape": [
+              1,
+              128,
+              4096
+            ],
+            "mlp_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "pv_shape": [
+              1,
+              32,
+              128,
+              128
+            ],
+            "q_projection_input_shape": [
+              1,
+              128,
+              4096
+            ],
+            "q_projection_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "qk_shape": [
+              1,
+              32,
+              128,
+              131
+            ],
+            "runtime_item_index": 0,
+            "softmax_probability_shape": [
+              1,
+              32,
+              128,
+              131
+            ]
+          },
+          {
+            "attention_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "item_index": 2,
+            "mlp_input_shape": [
+              1,
+              128,
+              4096
+            ],
+            "mlp_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "pv_shape": [
+              1,
+              32,
+              128,
+              128
+            ],
+            "q_projection_input_shape": [
+              1,
+              128,
+              4096
+            ],
+            "q_projection_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "qk_shape": [
+              1,
+              32,
+              128,
+              135
+            ],
+            "runtime_item_index": 1,
+            "softmax_probability_shape": [
+              1,
+              32,
+              128,
+              135
+            ]
+          },
+          {
+            "attention_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "item_index": 3,
+            "mlp_input_shape": [
+              1,
+              128,
+              4096
+            ],
+            "mlp_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "pv_shape": [
+              1,
+              32,
+              128,
+              128
+            ],
+            "q_projection_input_shape": [
+              1,
+              128,
+              4096
+            ],
+            "q_projection_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "qk_shape": [
+              1,
+              32,
+              128,
+              139
+            ],
+            "runtime_item_index": 2,
+            "softmax_probability_shape": [
+              1,
+              32,
+              128,
+              139
+            ]
+          }
+        ],
+        "layer_id": 29
+      },
+      {
+        "gnn": {
+          "edge_input_shape": [
+            2,
+            128,
+            4096
+          ],
+          "edge_output_shape": null,
+          "edge_output_status": "not_produced_by_gofa_gnn_layer",
+          "node_input_shape": [
+            2,
+            128,
+            4096
+          ],
+          "node_output_shape": [
+            2,
+            128,
+            4096
+          ]
+        },
+        "items": [
+          {
+            "attention_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "item_index": 0,
+            "mlp_input_shape": [
+              1,
+              128,
+              4096
+            ],
+            "mlp_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "pv_shape": [
+              1,
+              32,
+              128,
+              128
+            ],
+            "q_projection_input_shape": [
+              1,
+              128,
+              4096
+            ],
+            "q_projection_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "qk_shape": [
+              1,
+              32,
+              128,
+              131
+            ],
+            "runtime_item_index": 0,
+            "softmax_probability_shape": [
+              1,
+              32,
+              128,
+              131
+            ]
+          },
+          {
+            "attention_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "item_index": 2,
+            "mlp_input_shape": [
+              1,
+              128,
+              4096
+            ],
+            "mlp_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "pv_shape": [
+              1,
+              32,
+              128,
+              128
+            ],
+            "q_projection_input_shape": [
+              1,
+              128,
+              4096
+            ],
+            "q_projection_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "qk_shape": [
+              1,
+              32,
+              128,
+              135
+            ],
+            "runtime_item_index": 1,
+            "softmax_probability_shape": [
+              1,
+              32,
+              128,
+              135
+            ]
+          },
+          {
+            "attention_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "item_index": 3,
+            "mlp_input_shape": [
+              1,
+              128,
+              4096
+            ],
+            "mlp_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "pv_shape": [
+              1,
+              32,
+              128,
+              128
+            ],
+            "q_projection_input_shape": [
+              1,
+              128,
+              4096
+            ],
+            "q_projection_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "qk_shape": [
+              1,
+              32,
+              128,
+              139
+            ],
+            "runtime_item_index": 2,
+            "softmax_probability_shape": [
+              1,
+              32,
+              128,
+              139
+            ]
+          }
+        ],
+        "layer_id": 30
+      },
+      {
+        "gnn": {
+          "edge_input_shape": [
+            2,
+            128,
+            4096
+          ],
+          "edge_output_shape": null,
+          "edge_output_status": "not_produced_by_gofa_gnn_layer",
+          "node_input_shape": [
+            2,
+            128,
+            4096
+          ],
+          "node_output_shape": [
+            2,
+            128,
+            4096
+          ]
+        },
+        "items": [
+          {
+            "attention_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "item_index": 0,
+            "mlp_input_shape": [
+              1,
+              128,
+              4096
+            ],
+            "mlp_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "pv_shape": [
+              1,
+              32,
+              128,
+              128
+            ],
+            "q_projection_input_shape": [
+              1,
+              128,
+              4096
+            ],
+            "q_projection_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "qk_shape": [
+              1,
+              32,
+              128,
+              131
+            ],
+            "runtime_item_index": 0,
+            "softmax_probability_shape": [
+              1,
+              32,
+              128,
+              131
+            ]
+          },
+          {
+            "attention_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "item_index": 2,
+            "mlp_input_shape": [
+              1,
+              128,
+              4096
+            ],
+            "mlp_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "pv_shape": [
+              1,
+              32,
+              128,
+              128
+            ],
+            "q_projection_input_shape": [
+              1,
+              128,
+              4096
+            ],
+            "q_projection_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "qk_shape": [
+              1,
+              32,
+              128,
+              135
+            ],
+            "runtime_item_index": 1,
+            "softmax_probability_shape": [
+              1,
+              32,
+              128,
+              135
+            ]
+          },
+          {
+            "attention_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "item_index": 3,
+            "mlp_input_shape": [
+              1,
+              128,
+              4096
+            ],
+            "mlp_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "pv_shape": [
+              1,
+              32,
+              128,
+              128
+            ],
+            "q_projection_input_shape": [
+              1,
+              128,
+              4096
+            ],
+            "q_projection_output_shape": [
+              1,
+              128,
+              4096
+            ],
+            "qk_shape": [
+              1,
+              32,
+              128,
+              139
+            ],
+            "runtime_item_index": 2,
+            "softmax_probability_shape": [
+              1,
+              32,
+              128,
+              139
+            ]
+          }
+        ],
+        "layer_id": 31
+      }
+    ]
+  },
+  "runtime_query_index": 0,
+  "selective_kv_access": {
+    "complete_kv_item_indices": [
+      0,
+      3
+    ],
+    "effective_key_items_by_layer": {
+      "26": [
+        0,
+        3
+      ],
+      "27": [
+        0,
+        3
+      ],
+      "28": [
+        0,
+        3
+      ],
+      "29": [
+        0,
+        3
+      ],
+      "30": [
+        0,
+        3
+      ],
+      "31": [
+        0,
+        3
+      ]
+    },
+    "effective_value_items_by_layer": {
+      "26": [
+        0,
+        3
+      ],
+      "27": [
+        0,
+        3
+      ],
+      "28": [
+        0,
+        3
+      ],
+      "29": [
+        0,
+        3
+      ],
+      "30": [
+        0,
+        3
+      ],
+      "31": [
+        0,
+        3
+      ]
+    },
+    "eligible_item_indices": [
+      0,
+      1,
+      3
+    ],
+    "k_only_item_indices": [],
+    "key_item_mask": [
+      true,
+      false,
+      false,
+      true
+    ],
+    "policy_name": "target_1hop",
+    "selected_key_item_indices": [
+      0,
+      3
+    ],
+    "selected_value_item_indices": [
+      0,
+      3
+    ],
+    "selection_is_shared_across_suffix_layers": true,
+    "skipped_item_indices": [
+      1,
+      2
+    ],
+    "v_only_item_indices": [],
+    "value_item_mask": [
+      true,
+      false,
+      false,
+      true
+    ]
+  },
+  "split": "validation",
+  "summary": {
+    "NOG_count": 1,
+    "cacheable_item_count": 3,
+    "persistent_cache_bytes": 844800,
+    "runtime_loaded_cache_bytes": 829440,
+    "selected_KV_ratio": 0.6666666666666666,
+    "selected_K_ratio": 0.6666666666666666,
+    "selected_V_ratio": 0.6666666666666666,
+    "selection_ratio_basis": "cacheable_item_layer_accesses",
+    "total_item_count": 4
+  },
+  "task_name": "fixture_task",
+  "trace_format": "gofa_query_trace",
+  "trace_version": 1,
+  "traffic_metadata": {
+    "byte_accounting": "quantized_data_only_excluding_scale_and_container_metadata",
+    "edge_cache_bytes": 295936,
+    "full_key_bytes": 29184,
+    "full_value_bytes": 29184,
+    "memory_cache_bytes": 786432,
+    "nog_online_item_count": 1,
+    "persistent_cache_bytes": 844800,
+    "runtime_loaded_cache_bytes": 829440,
+    "selected_key_bytes": 21504,
+    "selected_value_bytes": 21504
+  }
+}

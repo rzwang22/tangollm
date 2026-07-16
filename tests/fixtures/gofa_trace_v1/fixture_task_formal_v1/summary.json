@@ -1,0 +1,45 @@
+{
+  "tasks": {
+    "fixture_task": {
+      "NOG_online_count": {
+        "mean": 1,
+        "total": 2
+      },
+      "edge_count": {
+        "max": 2,
+        "mean": 2,
+        "min": 2,
+        "p50": 2.0,
+        "p95": 2.0
+      },
+      "edge_text_item_count": {
+        "mean": 1,
+        "total": 2
+      },
+      "loaded_cache_bytes": {
+        "mean": 829440,
+        "total": 1658880
+      },
+      "node_count": {
+        "max": 2,
+        "mean": 2,
+        "min": 2,
+        "p50": 2.0,
+        "p95": 2.0
+      },
+      "node_text_item_count": {
+        "mean": 3,
+        "total": 6
+      },
+      "persistent_cache_bytes": {
+        "mean": 844800,
+        "total": 1689600
+      },
+      "query_count": 2,
+      "selected_KV_ratio": 0.6666666666666666,
+      "selected_K_ratio": 0.6666666666666666,
+      "selected_V_ratio": 0.6666666666666666
+    }
+  },
+  "trace_format": "gofa_query_trace_summary_v1"
+}

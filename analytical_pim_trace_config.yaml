@@ -1,5 +1,5 @@
 workload:
-  mode: synthetic
+  mode: trace
 
 model:
   memory_tokens: 128
@@ -13,6 +13,30 @@ model:
   include_scale_metadata: false
   scale_group_channels: 16
   scale_bytes: 2
+
+trace_workload:
+  root: /home/rzwang/data/GOFA/cache_data/gofa_cache_exp/canonical_seed1_h3_n10_s100/query_traces
+  splits: [validation, test]
+  expected_queries_per_split: 100
+  expected_batch_size: 1
+  expected_cache_mode: memory_kv
+  expected_selection_policy: target_1hop
+  expected_memory_bits: 4
+  expected_key_bits: 2
+  expected_value_bits: 2
+  expected_gnn_start_layer: 26
+  validate_summary: true
+  tasks:
+    - name: cora_node
+      directory: cora_node_formal_v1
+    - name: cora_link
+      directory: cora_link_formal_v1
+    - name: pubmed_node
+      directory: pubmed_node_formal_v1
+    - name: wikics
+      directory: wikics_formal_v1
+    - name: arxiv
+      directory: arxiv_formal_v1
 
 hbm3:
   num_stacks: 1
@@ -30,13 +54,6 @@ near_bank_pe:
   scale_group_cycles: 1
   softmax_group_cycles: 1
   scheduling_overhead_per_tile_cycles: 16
-  h100_group_cycles: 1
-  h100_cache_bytes_per_cycle: 4096
-  h100_int2_unpack_group_cycles: 1
-  h100_scale_dequant_group_cycles: 1
-  h100_layout_conversion_group_cycles: 1
-  h100_irregular_gather_penalty: 1.25
-  h100_small_batch_efficiency: 0.50
   clock_ns: 1.0
 
 tile:
@@ -45,43 +62,7 @@ tile:
   memory_token_tiles: [1, 4, 8]
 
 workload_suite:
-  full_graph_nodes: 2708
-  full_graph_edges: 10556
-  num_queries_per_workload: 16
-  high_degree_top_percent: 0.05
-  seed: 777
-  allow_duplicate_edges: false
-  workloads:
-    - name: smoke
-      sampled_nodes: 5
-      sampled_edges: 15
-      degree_distribution: uniform
-      power_law_exponent: 1.2
-      destination_skew: 0.0
-    - name: small
-      sampled_nodes: 16
-      sampled_edges: 64
-      degree_distribution: uniform
-      power_law_exponent: 1.2
-      destination_skew: 0.0
-    - name: medium
-      sampled_nodes: 64
-      sampled_edges: 512
-      degree_distribution: uniform
-      power_law_exponent: 1.2
-      destination_skew: 0.0
-    - name: large
-      sampled_nodes: 128
-      sampled_edges: 2048
-      degree_distribution: uniform
-      power_law_exponent: 1.2
-      destination_skew: 0.0
-    - name: skewed_high_degree
-      sampled_nodes: 128
-      sampled_edges: 2048
-      degree_distribution: power_law
-      power_law_exponent: 1.2
-      destination_skew: 1.5
+  seed: 1
 
 hybrid_placement:
   hot_dst_degree_threshold: 64
@@ -119,14 +100,13 @@ graph_compute_placement_sweep:
   - hybrid_locality_balanced
 
 kv_storage_placement_sweep:
-  - legacy_graph_coupled
+  - hash
+  - balanced
 
 baselines:
-  - h100_ideal_compute_only
-  - h100_realistic_cache_path
   - pim_selective_kv_no_local_combine
   - pim_selective_kv_local_combine
 
 output:
-  per_query_csv: ../data/analytical_pim_per_query.csv
-  aggregate_csv: ../data/analytical_pim_aggregate.csv
+  per_query_csv: ../data/analytical_pim_trace_per_query.csv
+  aggregate_csv: ../data/analytical_pim_trace_aggregate.csv

@@ -1,0 +1,2 @@
+{"cacheable_items": 3, "num_edges": 2, "num_nodes": 2, "query_id": "query_000000", "runtime_loaded_bytes": 829440, "selected_K_items": 2, "selected_V_items": 2, "split": "validation", "task": "fixture_task", "trace_path": "query_000000.json"}
+{"cacheable_items": 3, "num_edges": 2, "num_nodes": 2, "query_id": "query_000001", "runtime_loaded_bytes": 829440, "selected_K_items": 2, "selected_V_items": 2, "split": "test", "task": "fixture_task", "trace_path": "query_000001.json"}

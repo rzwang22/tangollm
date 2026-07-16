@@ -4,6 +4,48 @@ This target is an architecture-level analytical simulator for the HBM3
 near-bank PIM design. It is independent from Ramulator and does not model
 cycle-accurate DRAM timing or real tensor values.
 
+## Patch 5 Scope
+
+Patch 5 adds a trace-driven execution mode for the formal GOFA workloads while
+retaining the Patch 4 synthetic suite as a regression target. It remains an
+architecture-level analytical model: no Ramulator, cycle-accurate timing, or
+tensor payload execution is introduced.
+
+The formal config reads these tasks from the configured trace root:
+
+- `cora_node_formal_v1`
+- `cora_link_formal_v1`
+- `pubmed_node_formal_v1`
+- `wikics_formal_v1`
+- `arxiv_formal_v1`
+
+Queries are loaded in `trace_index.jsonl` order. Validation and test rows are
+never aggregated together: validation rows have
+`evaluation_role=config_selection`, while test rows have
+`evaluation_role=final_evaluation`. Configuration choices must be made from
+validation output and then applied unchanged to test output.
+
+For formal traces, the simulator directly consumes:
+
+- sampled graph structure and NOG metadata;
+- memory-state and text-K/V inventory;
+- selected K and V item masks for every suffix layer;
+- quantized logical bytes excluding scale/container metadata;
+- valid and stored token counts;
+- runtime QK, PV, GNN node, and GNN edge shapes.
+
+The strict validator cross-checks every query against its index entry and
+cross-checks all indexed queries against `summary.json`. It also validates
+model dimensions, graph mappings, NOG placement, inventory types and
+precision, selection sets/masks, per-layer sharing, runtime item order,
+QK/PV token dimensions, logical-byte accounting, selection ratios, split
+counts, split order, and exact enumeration of `query_*.json` files. Tensor
+payload fields are rejected.
+
+Formal trace execution does not use the synthetic
+`selected_count * 786432` estimate. Cached-KV work and bytes come from the
+per-item, per-layer K/V shapes in each trace.
+
 ## Patch 4 Scope
 
 Patch 4 adds workload correctness, fair reducer paths, and communication-aware
@@ -131,9 +173,24 @@ The per-query CSV retains `cached_kv_bottleneck_bank`. The aggregate CSV adds
 bank. These fields explain why total selected-KV count and cached-KV
 critical-path latency need not be monotonic.
 
-In the current model, `degree_balanced` also balances selected-KV node storage.
-The other edge placement policies use node-hash selected-KV storage. A separate
-configurable KV placement policy is intentionally deferred to a later patch.
+Patch 5 separates graph compute placement from KV storage placement:
+
+```yaml
+graph_compute_placement_sweep:
+  - hash
+  - degree_balanced
+  - source_dst_locality
+  - hybrid_locality_balanced
+
+kv_storage_placement_sweep:
+  - hash
+  - balanced
+```
+
+`hash` maps a trace cache key independently of graph node placement.
+`balanced` greedily assigns the heaviest QK/PV item to the least-loaded bank.
+Synthetic regression uses `legacy_graph_coupled`, which exactly preserves the
+Patch 4 mapping and numerical results.
 
 ## Placement Sweep
 
@@ -189,6 +246,17 @@ efficiency penalty.
 
 Patch 4 does not report PIM/H100 speedup. The H100 throughput parameters still
 require external calibration before cross-architecture performance claims.
+
+The first Patch 5 formal run includes only the two PIM-internal alternatives:
+
+```yaml
+baselines:
+  - pim_selective_kv_no_local_combine
+  - pim_selective_kv_local_combine
+```
+
+It is workload characterization and internal design comparison only; it does
+not report PIM/H100 speedup.
 
 ## Fair Reducer Paths
 
@@ -323,11 +391,31 @@ cd build
 ./analytical_pim analytical_pim_config.yaml
 ```
 
+Run the formal GOFA trace suite on the server with:
+
+```bash
+./analytical_pim analytical_pim_trace_config.yaml
+```
+
+The trace root is configured in `analytical_pim_trace_config.yaml`:
+
+```text
+/home/rzwang/data/GOFA/cache_data/gofa_cache_exp/
+canonical_seed1_h3_n10_s100/query_traces
+```
+
 Outputs:
 
 ```text
 ../data/analytical_pim_per_query.csv
 ../data/analytical_pim_aggregate.csv
+```
+
+Formal trace outputs are separate:
+
+```text
+../data/analytical_pim_trace_per_query.csv
+../data/analytical_pim_trace_aggregate.csv
 ```
 
 With the default config, the aggregate CSV has:
@@ -344,3 +432,27 @@ The per-query CSV has:
 
 Patch 4 with selected-KV placement diagnosis emits 127 per-query columns and
 116 aggregate columns.
+
+Patch 5 emits 171 per-query columns and 156 aggregate columns. The additional
+fields carry trace identity, split/evaluation role, target/question and cache
+inventory counts, independent graph/KV placement, native cache bytes including
+edge-cache bytes, token counts, QK/PV work, and NOG shapes.
+
+The formal config produces:
+
+```text
+1000 queries * 4 graph placements * 2 KV placements
+             * 2 PIM baselines * 3 tile sizes = 48000 per-query rows
+
+5 workloads * 2 splits * 4 graph placements * 2 KV placements
+            * 2 PIM baselines * 3 tile sizes = 240 aggregate rows
+```
+
+The local fixture under `tests/fixtures/gofa_trace_v1` contains one validation
+and one test query. It uses nonuniform 3/5/7/11-token items so the end-to-end
+test detects any fallback to fixed 256-token or 786432-byte item estimates.
+Run its positive and negative validator tests from the repository root:
+
+```bash
+python3 tests/test_analytical_pim_trace.py --binary build/analytical_pim
+```

@@ -21,6 +21,8 @@
 #include <utility>
 #include <vector>
 
+#include "analytical/gofa_trace.h"
+
 namespace llm_system {
 namespace analytical {
 
@@ -35,6 +37,9 @@ constexpr const char* kPlacementHash = "hash";
 constexpr const char* kPlacementDegreeBalanced = "degree_balanced";
 constexpr const char* kPlacementSourceDstLocality = "source_dst_locality";
 constexpr const char* kPlacementHybrid = "hybrid_locality_balanced";
+constexpr const char* kKVPlacementLegacy = "legacy_graph_coupled";
+constexpr const char* kKVPlacementHash = "hash";
+constexpr const char* kKVPlacementBalanced = "balanced";
 
 struct TopologyConfig {
   int num_stacks = 1;
@@ -124,6 +129,10 @@ struct WorkloadSuiteConfig {
   std::vector<WorkloadCase> workloads;
 };
 
+struct TraceWorkloadConfig {
+  GOFATraceLoadConfig loader;
+};
+
 struct HybridPlacementConfig {
   int hot_dst_degree_threshold = 64;
   int target_edges_per_bank = 32;
@@ -169,16 +178,69 @@ struct Edge {
   int pseudo_channel = 0;
 };
 
+struct KVWorkItem {
+  int item_index = 0;
+  int legacy_node = -1;
+  std::string cache_key;
+  std::string item_type;
+  double qk_groups = 0.0;
+  double pv_groups = 0.0;
+  double selected_key_bytes = 0.0;
+  double selected_value_bytes = 0.0;
+  double memory_bytes = 0.0;
+  double valid_text_tokens = 0.0;
+  double stored_key_tokens = 0.0;
+  double stored_value_tokens = 0.0;
+};
+
 struct QuerySample {
   int query_id = 0;
   std::string workload;
+  std::string workload_mode = "synthetic";
+  std::string dataset;
+  std::string split = "synthetic";
+  std::string evaluation_role = "regression";
+  std::string trace_query_id;
+  std::string trace_source_path;
+  std::string selection_policy;
+  int trace_order = -1;
+  int runtime_query_index = -1;
   int target_node = 0;
+  int target_node_count = 0;
+  int question_node_count = 0;
   int full_graph_nodes = 0;
+  int gnn_layer_count = 1;
+  int total_item_count = 0;
+  int node_text_item_count = 0;
+  int edge_text_item_count = 0;
+  int cacheable_item_count = 0;
+  int nog_count = 0;
+  int selected_key_item_count = 0;
+  int selected_value_item_count = 0;
+  double selected_key_ratio = 0.0;
+  double selected_value_ratio = 0.0;
+  double selected_kv_ratio = 0.0;
+  double memory_cache_bytes = 0.0;
+  double edge_cache_bytes = 0.0;
+  double full_key_bytes = 0.0;
+  double full_value_bytes = 0.0;
+  double selected_key_bytes = 0.0;
+  double selected_value_bytes = 0.0;
+  double persistent_cache_bytes = 0.0;
+  double runtime_loaded_cache_bytes = 0.0;
+  double cache_inventory_sequence_tokens = 0.0;
+  double cache_inventory_valid_text_tokens = 0.0;
+  double selected_sequence_tokens = 0.0;
+  double runtime_qk_elements = 0.0;
+  double runtime_pv_output_elements = 0.0;
+  double nog_runtime_qk_elements = 0.0;
+  double nog_runtime_pv_output_elements = 0.0;
   std::vector<int> sampled_nodes;
   std::vector<Edge> edges;
   std::vector<bool> selected_kv_mask;
   std::vector<int> node_degree;
   std::vector<bool> high_degree_mask;
+  std::vector<KVWorkItem> kv_work_items;
 };
 
 struct GraphSanity {
@@ -225,12 +287,14 @@ struct PlacementValidation {
 };
 
 struct SimulationConfig {
+  std::string workload_mode = "synthetic";
   TopologyConfig topology;
   PEConfig pe;
   PrecisionConfig precision;
   TileConfig tile;
   ModelConfig model;
   WorkloadSuiteConfig suite;
+  TraceWorkloadConfig trace;
   HybridPlacementConfig hybrid;
   CommunicationConfig communication;
   ReducerConfig reducer;
@@ -238,6 +302,7 @@ struct SimulationConfig {
   std::vector<std::string> placements{kPlacementHash, kPlacementDegreeBalanced,
                                       kPlacementSourceDstLocality,
                                       kPlacementHybrid};
+  std::vector<std::string> kv_placements{kKVPlacementLegacy};
   std::vector<std::string> baselines{kH100Ideal, kH100Realistic,
                                      kPIMNoLocalCombine, kPIMLocalCombine};
 };
@@ -268,18 +333,62 @@ struct KVPlacementDiagnosis {
 
 struct QueryResult {
   std::string workload;
+  std::string workload_mode;
+  std::string dataset;
+  std::string split;
+  std::string evaluation_role;
+  std::string trace_query_id;
+  std::string trace_source_path;
+  std::string selection_policy;
   std::string placement;
+  std::string graph_compute_placement;
+  std::string kv_storage_placement;
   std::string baseline;
   int query_id = 0;
+  int trace_order = -1;
+  int runtime_query_index = -1;
   int target_node = 0;
+  int target_node_count = 0;
+  int question_node_count = 0;
   int memory_token_tile = 1;
   int num_token_tiles = 0;
   int sampled_node_count = 0;
   int sampled_edge_count = 0;
+  int total_item_count = 0;
+  int node_text_item_count = 0;
+  int edge_text_item_count = 0;
   int selected_kv_count = 0;
+  int selected_key_item_count = 0;
+  int selected_value_item_count = 0;
+  int cacheable_item_count = 0;
+  int nog_count = 0;
+  int gnn_layer_count = 1;
+  double selected_key_ratio = 0.0;
+  double selected_value_ratio = 0.0;
+  double selected_kv_ratio = 0.0;
   double selected_kv_ratio_vs_sampled_nodes = 0.0;
   double selected_kv_ratio_vs_full_graph = 0.0;
   double selected_kv_bytes = 0.0;
+  double memory_cache_bytes = 0.0;
+  double edge_cache_bytes = 0.0;
+  double full_key_bytes = 0.0;
+  double full_value_bytes = 0.0;
+  double selected_key_bytes = 0.0;
+  double selected_value_bytes = 0.0;
+  double persistent_cache_bytes = 0.0;
+  double runtime_loaded_cache_bytes = 0.0;
+  double cache_inventory_sequence_tokens = 0.0;
+  double cache_inventory_valid_text_tokens = 0.0;
+  double selected_sequence_tokens = 0.0;
+  double valid_text_tokens = 0.0;
+  double stored_key_tokens = 0.0;
+  double stored_value_tokens = 0.0;
+  double trace_cached_qk_groups = 0.0;
+  double trace_cached_pv_groups = 0.0;
+  double runtime_qk_elements = 0.0;
+  double runtime_pv_output_elements = 0.0;
+  double nog_runtime_qk_elements = 0.0;
+  double nog_runtime_pv_output_elements = 0.0;
   double q_broadcast_bytes = 0.0;
   double score_traffic_bytes = 0.0;
   double p_return_traffic_bytes = 0.0;
@@ -455,6 +564,8 @@ std::vector<WorkloadCase> DefaultWorkloads() {
 SimulationConfig LoadConfig(const std::string& config_path) {
   YAML::Node root = YAML::LoadFile(config_path);
   SimulationConfig config;
+  config.workload_mode =
+      ReadScalar<std::string>(root["workload"], "mode", "synthetic");
 
   const YAML::Node hbm = root["hbm3"];
   config.topology.num_stacks = ReadScalar<int>(hbm, "num_stacks", 1);
@@ -555,6 +666,58 @@ SimulationConfig LoadConfig(const std::string& config_path) {
     config.suite.workloads = DefaultWorkloads();
   }
 
+  const YAML::Node trace = root["trace_workload"];
+  config.trace.loader.root = ReadScalar<std::string>(trace, "root", "");
+  config.trace.loader.splits = ReadStringVector(trace["splits"]);
+  if (config.trace.loader.splits.empty()) {
+    config.trace.loader.splits = {"validation", "test"};
+  }
+  config.trace.loader.expected_queries_per_split =
+      ReadScalar<int>(trace, "expected_queries_per_split", 100);
+  config.trace.loader.expected_batch_size =
+      ReadScalar<int>(trace, "expected_batch_size", 1);
+  config.trace.loader.expected_cache_mode =
+      ReadScalar<std::string>(trace, "expected_cache_mode", "memory_kv");
+  config.trace.loader.expected_selection_policy = ReadScalar<std::string>(
+      trace, "expected_selection_policy", "target_1hop");
+  config.trace.loader.expected_memory_bits =
+      ReadScalar<int>(trace, "expected_memory_bits", 4);
+  config.trace.loader.expected_key_bits =
+      ReadScalar<int>(trace, "expected_key_bits", 2);
+  config.trace.loader.expected_value_bits =
+      ReadScalar<int>(trace, "expected_value_bits", 2);
+  config.trace.loader.validate_summary =
+      ReadScalar<bool>(trace, "validate_summary", true);
+  config.trace.loader.expected_hidden_size = config.model.hidden_dim;
+  config.trace.loader.expected_attention_heads = config.model.gnn_heads;
+  config.trace.loader.expected_kv_heads = config.model.kv_heads;
+  config.trace.loader.expected_head_dim = config.model.head_dim;
+  config.trace.loader.expected_memory_tokens = config.model.memory_tokens;
+  config.trace.loader.expected_suffix_layer_ids.clear();
+  const int gnn_start_layer =
+      ReadScalar<int>(trace, "expected_gnn_start_layer", 26);
+  for (int offset = 0; offset < config.model.suffix_layers; ++offset) {
+    config.trace.loader.expected_suffix_layer_ids.push_back(gnn_start_layer +
+                                                            offset);
+  }
+  const YAML::Node trace_tasks = trace["tasks"];
+  if (trace_tasks && trace_tasks.IsSequence()) {
+    for (const auto& item : trace_tasks) {
+      GOFATraceTaskConfig task;
+      task.name = ReadScalar<std::string>(item, "name", "");
+      task.directory = ReadScalar<std::string>(item, "directory", "");
+      config.trace.loader.tasks.push_back(std::move(task));
+    }
+  }
+  if (config.workload_mode == "trace") {
+    config.suite.workloads.clear();
+    for (const auto& task : config.trace.loader.tasks) {
+      WorkloadCase workload;
+      workload.name = task.name;
+      config.suite.workloads.push_back(std::move(workload));
+    }
+  }
+
   const YAML::Node hybrid = root["hybrid_placement"];
   config.hybrid.hot_dst_degree_threshold =
       ReadScalar<int>(hybrid, "hot_dst_degree_threshold", 64);
@@ -616,9 +779,17 @@ SimulationConfig LoadConfig(const std::string& config_path) {
   config.reducer.global_concurrent_destination_groups = ReadScalar<int>(
       reducer, "global_concurrent_destination_groups", 256);
 
-  const auto placements = ReadStringVector(root["placement_sweep"]);
+  auto placements = ReadStringVector(root["graph_compute_placement_sweep"]);
+  if (placements.empty()) {
+    placements = ReadStringVector(root["placement_sweep"]);
+  }
   if (!placements.empty()) {
     config.placements = placements;
+  }
+  const auto kv_placements =
+      ReadStringVector(root["kv_storage_placement_sweep"]);
+  if (!kv_placements.empty()) {
+    config.kv_placements = kv_placements;
   }
   const auto baselines = ReadStringVector(root["baselines"]);
   if (!baselines.empty()) {
@@ -631,10 +802,16 @@ SimulationConfig LoadConfig(const std::string& config_path) {
   config.output.aggregate_csv = ReadScalar<std::string>(
       output, "aggregate_csv", "../data/analytical_pim_aggregate.csv");
 
-  if (config.model.memory_tokens <= 0 || config.model.gnn_heads <= 0 ||
+  if ((config.workload_mode != "synthetic" &&
+       config.workload_mode != "trace") ||
+      config.model.memory_tokens <= 0 || config.model.gnn_heads <= 0 ||
       config.model.head_dim <= 0 || config.tile.channel_group <= 0 ||
-      config.suite.full_graph_nodes <= 0 ||
-      config.suite.num_queries_per_workload <= 0 ||
+      (config.workload_mode == "synthetic" &&
+       (config.suite.full_graph_nodes <= 0 ||
+        config.suite.num_queries_per_workload <= 0)) ||
+      (config.workload_mode == "trace" &&
+       (config.trace.loader.root.empty() ||
+        config.trace.loader.tasks.empty())) ||
       config.hybrid.hot_dst_degree_threshold <= 0 ||
       config.hybrid.target_edges_per_bank <= 0 ||
       config.hybrid.max_banks_per_destination <= 0 ||
@@ -672,6 +849,23 @@ SimulationConfig LoadConfig(const std::string& config_path) {
       throw std::runtime_error("Invalid workload suite config: " +
                                workload.name);
     }
+  }
+  for (const auto& task : config.trace.loader.tasks) {
+    if (task.name.empty() || task.directory.empty()) {
+      throw std::runtime_error("Invalid trace workload task config");
+    }
+  }
+  for (const auto& placement : config.kv_placements) {
+    if (placement != kKVPlacementLegacy && placement != kKVPlacementHash &&
+        placement != kKVPlacementBalanced) {
+      throw std::runtime_error("Unknown KV storage placement: " + placement);
+    }
+  }
+  if (config.workload_mode == "trace" &&
+      std::find(config.kv_placements.begin(), config.kv_placements.end(),
+                kKVPlacementLegacy) != config.kv_placements.end()) {
+    throw std::runtime_error(
+        "trace workload cannot use legacy_graph_coupled KV placement");
   }
   return config;
 }
@@ -729,6 +923,15 @@ void PrintSanityCheck(const SimulationConfig& config) {
             << config.reducer.global_lanes_per_unit
             << ", global_input_bytes_per_cycle="
             << config.reducer.global_input_bandwidth_bytes_per_cycle << "\n";
+  std::cout << "workload_mode=" << config.workload_mode;
+  if (config.workload_mode == "trace") {
+    std::cout << ", trace_root=" << config.trace.loader.root
+              << ", tasks=" << config.trace.loader.tasks.size()
+              << ", splits=" << config.trace.loader.splits.size()
+              << ", selection_policy="
+              << config.trace.loader.expected_selection_policy;
+  }
+  std::cout << "\n";
 }
 
 void AddUniqueNode(std::vector<int>& nodes, std::vector<bool>& mask, int node) {
@@ -744,6 +947,10 @@ uint32_t StableStringHash(const std::string& value) {
     hash = (hash ^ ch) * 16777619u;
   }
   return hash;
+}
+
+bool Contains(const std::vector<int>& values, int value) {
+  return std::find(values.begin(), values.end(), value) != values.end();
 }
 
 struct WeightedEdgeCandidate {
@@ -901,11 +1108,212 @@ QuerySample GenerateQuery(const SimulationConfig& config,
       query.selected_kv_mask[node] = true;
     }
   }
+  query.dataset = workload.name;
+  query.selection_policy = "target_1hop_high_degree";
+  query.target_node_count = 1;
+  query.total_item_count = query.sampled_nodes.size();
+  query.node_text_item_count = query.sampled_nodes.size();
+  query.cacheable_item_count = query.sampled_nodes.size();
+  query.cache_inventory_sequence_tokens =
+      1.0 * query.sampled_nodes.size() * config.model.text_len;
+  query.cache_inventory_valid_text_tokens =
+      query.cache_inventory_sequence_tokens;
+  const double key_bytes_per_item = TextKVBytesPerItem(config.model) / 2.0;
+  const double groups_per_item = 1.0 * config.model.suffix_layers *
+                                 config.model.text_len *
+                                 config.model.gnn_heads * GroupsPerHead(config);
+  for (int node : query.sampled_nodes) {
+    query.full_key_bytes += key_bytes_per_item;
+    query.full_value_bytes += key_bytes_per_item;
+    if (!query.selected_kv_mask[node]) {
+      continue;
+    }
+    KVWorkItem item;
+    item.item_index = node;
+    item.legacy_node = node;
+    item.cache_key = "synthetic-node-" + std::to_string(node);
+    item.item_type = "node";
+    item.qk_groups = groups_per_item;
+    item.pv_groups = groups_per_item;
+    item.selected_key_bytes = key_bytes_per_item;
+    item.selected_value_bytes = key_bytes_per_item;
+    item.valid_text_tokens = config.model.text_len;
+    item.stored_key_tokens = config.model.suffix_layers * config.model.text_len;
+    item.stored_value_tokens = item.stored_key_tokens;
+    query.selected_key_bytes += key_bytes_per_item;
+    query.selected_value_bytes += key_bytes_per_item;
+    query.selected_key_item_count++;
+    query.selected_value_item_count++;
+    query.selected_sequence_tokens += config.model.text_len;
+    query.kv_work_items.push_back(std::move(item));
+  }
+  query.persistent_cache_bytes = query.full_key_bytes + query.full_value_bytes;
+  query.runtime_loaded_cache_bytes =
+      query.selected_key_bytes + query.selected_value_bytes;
+  query.selected_key_ratio =
+      query.cacheable_item_count == 0
+          ? 0.0
+          : 1.0 * query.selected_key_item_count / query.cacheable_item_count;
+  query.selected_value_ratio =
+      query.cacheable_item_count == 0
+          ? 0.0
+          : 1.0 * query.selected_value_item_count / query.cacheable_item_count;
+  query.selected_kv_ratio = query.selected_key_ratio;
+  return query;
+}
+
+QuerySample ConvertTraceQuery(const SimulationConfig& config,
+                              const GOFATraceQuery& trace) {
+  QuerySample query;
+  query.query_id = trace.trace_order;
+  query.workload = trace.task_name;
+  query.workload_mode = "trace";
+  query.dataset = trace.dataset_name;
+  query.split = trace.split;
+  query.evaluation_role =
+      trace.split == "validation" ? "config_selection" : "final_evaluation";
+  query.trace_query_id = trace.query_id;
+  query.trace_source_path = trace.source_path;
+  query.selection_policy = trace.selection_policy;
+  query.trace_order = trace.trace_order;
+  query.runtime_query_index = trace.runtime_query_index;
+  query.full_graph_nodes = trace.num_graph_nodes;
+  query.target_node =
+      trace.target_indices.empty() ? 0 : trace.target_indices[0];
+  query.target_node_count = trace.target_indices.size();
+  query.question_node_count = trace.question_indices.size();
+  query.gnn_layer_count = trace.runtime_layers.size();
+  query.total_item_count = trace.total_item_count;
+  query.node_text_item_count = trace.num_node_text_items;
+  query.edge_text_item_count = trace.num_edge_text_items;
+  query.cacheable_item_count = trace.cacheable_item_count;
+  query.nog_count = trace.nog_count;
+  query.selected_key_item_count = trace.selected_key_item_indices.size();
+  query.selected_value_item_count = trace.selected_value_item_indices.size();
+  query.selected_key_ratio = trace.selected_key_ratio;
+  query.selected_value_ratio = trace.selected_value_ratio;
+  query.selected_kv_ratio = trace.selected_kv_ratio;
+  query.memory_cache_bytes = trace.traffic.memory_cache_bytes;
+  query.edge_cache_bytes = trace.traffic.edge_cache_bytes;
+  query.full_key_bytes = trace.traffic.full_key_bytes;
+  query.full_value_bytes = trace.traffic.full_value_bytes;
+  query.selected_key_bytes = trace.traffic.selected_key_bytes;
+  query.selected_value_bytes = trace.traffic.selected_value_bytes;
+  query.persistent_cache_bytes = trace.traffic.persistent_cache_bytes;
+  query.runtime_loaded_cache_bytes = trace.traffic.runtime_loaded_cache_bytes;
+  for (const auto& item : trace.cache_items) {
+    query.cache_inventory_sequence_tokens += item.sequence_length;
+    query.cache_inventory_valid_text_tokens += item.valid_text_tokens;
+  }
+  query.sampled_nodes.resize(trace.num_graph_nodes);
+  std::iota(query.sampled_nodes.begin(), query.sampled_nodes.end(), 0);
+  query.node_degree.assign(trace.num_graph_nodes, 0);
+  query.high_degree_mask.assign(trace.num_graph_nodes, false);
+  query.selected_kv_mask.assign(trace.num_graph_nodes, false);
+  for (int edge_id = 0; edge_id < trace.num_structural_edges; ++edge_id) {
+    Edge edge;
+    edge.src = trace.edge_sources[edge_id];
+    edge.dst = trace.edge_destinations[edge_id];
+    edge.id = edge_id;
+    query.edges.push_back(edge);
+    query.node_degree[edge.src]++;
+    query.node_degree[edge.dst]++;
+  }
+
+  std::set<int> selected_union(trace.selected_key_item_indices.begin(),
+                               trace.selected_key_item_indices.end());
+  selected_union.insert(trace.selected_value_item_indices.begin(),
+                        trace.selected_value_item_indices.end());
+  for (int local_node = 0; local_node < trace.num_graph_nodes; ++local_node) {
+    if (selected_union.count(trace.node_map[local_node]) != 0) {
+      query.selected_kv_mask[local_node] = true;
+    }
+  }
+
+  const int groups_per_head = GroupsPerHead(config);
+  std::unordered_map<int, size_t> work_item_by_index;
+  for (int item_index : selected_union) {
+    const auto& trace_item = trace.cache_items[item_index];
+    KVWorkItem item;
+    item.item_index = item_index;
+    item.cache_key = trace_item.cache_key;
+    item.item_type = trace_item.item_type;
+    item.memory_bytes = trace_item.memory_logical_bytes;
+    item.valid_text_tokens = trace_item.valid_text_tokens;
+    query.selected_sequence_tokens += trace_item.sequence_length;
+    work_item_by_index[item_index] = query.kv_work_items.size();
+    query.kv_work_items.push_back(std::move(item));
+  }
+
+  for (size_t layer_index = 0; layer_index < trace.runtime_layers.size();
+       ++layer_index) {
+    const auto& layer = trace.runtime_layers[layer_index];
+    const auto& selected_keys = trace.selected_key_items_by_layer[layer_index];
+    const auto& selected_values =
+        trace.selected_value_items_by_layer[layer_index];
+    for (const auto& runtime_item : layer.items) {
+      query.runtime_qk_elements += runtime_item.qk_shape.Numel();
+      query.runtime_pv_output_elements += runtime_item.pv_shape.Numel();
+      if (trace.cache_items[runtime_item.item_index].is_nog) {
+        query.nog_runtime_qk_elements += runtime_item.qk_shape.Numel();
+        query.nog_runtime_pv_output_elements += runtime_item.pv_shape.Numel();
+      }
+      const auto work_position =
+          work_item_by_index.find(runtime_item.item_index);
+      if (work_position == work_item_by_index.end()) {
+        continue;
+      }
+      KVWorkItem& work_item = query.kv_work_items[work_position->second];
+      const GOFATraceCacheItem& cache_item =
+          trace.cache_items[runtime_item.item_index];
+      const GOFATraceKVLayer& kv_layer = cache_item.layers[layer_index];
+      const double q_shape_groups =
+          1.0 * runtime_item.qk_shape.Dim(0) * runtime_item.qk_shape.Dim(1) *
+          runtime_item.qk_shape.Dim(2) * groups_per_head;
+      if (Contains(selected_keys, runtime_item.item_index)) {
+        const double tokens = kv_layer.key_shape.Dim(1);
+        work_item.qk_groups += q_shape_groups * tokens;
+      }
+      if (Contains(selected_values, runtime_item.item_index)) {
+        const double tokens = kv_layer.value_shape.Dim(1);
+        work_item.pv_groups += q_shape_groups * tokens;
+      }
+    }
+    for (int item_index : selected_keys) {
+      KVWorkItem& work_item =
+          query.kv_work_items.at(work_item_by_index.at(item_index));
+      const auto& cache_item = trace.cache_items[item_index];
+      const auto& shape = cache_item.layers[layer_index].key_shape;
+      work_item.stored_key_tokens += shape.Dim(1);
+      work_item.selected_key_bytes +=
+          1.0 * shape.Numel() * cache_item.key_bits / 8.0;
+    }
+    for (int item_index : selected_values) {
+      KVWorkItem& work_item =
+          query.kv_work_items.at(work_item_by_index.at(item_index));
+      const auto& cache_item = trace.cache_items[item_index];
+      const auto& shape = cache_item.layers[layer_index].value_shape;
+      work_item.stored_value_tokens += shape.Dim(1);
+      work_item.selected_value_bytes +=
+          1.0 * shape.Numel() * cache_item.value_bits / 8.0;
+    }
+  }
   return query;
 }
 
 std::vector<QuerySample> GenerateQueries(const SimulationConfig& config) {
   std::vector<QuerySample> queries;
+  if (config.workload_mode == "trace") {
+    GOFATraceLoadResult traces = LoadAndValidateGOFATraces(config.trace.loader);
+    queries.reserve(traces.queries.size());
+    for (const auto& trace : traces.queries) {
+      queries.push_back(ConvertTraceQuery(config, trace));
+    }
+    std::cout << "GOFA trace validation passed: queries=" << queries.size()
+              << ", validation=" << traces.validation_query_count
+              << ", test=" << traces.test_query_count << "\n";
+    return queries;
+  }
   for (const auto& workload : config.suite.workloads) {
     for (int query_id = 0; query_id < config.suite.num_queries_per_workload;
          ++query_id) {
@@ -1205,33 +1613,87 @@ QuerySample ApplyPlacement(const QuerySample& input,
 }
 
 int CountSelectedKV(const QuerySample& query) {
-  int count = 0;
-  for (int node : query.sampled_nodes) {
-    if (query.selected_kv_mask[node]) {
-      count++;
-    }
-  }
-  return count;
+  return query.kv_work_items.size();
 }
 
-std::vector<int> SelectedKVCountByBank(const QuerySample& query,
-                                       const SimulationConfig& config,
-                                       const std::string& placement) {
-  std::vector<int> counts(config.topology.total_banks(), 0);
-  const auto degree_balanced = BuildDegreeBalancedNodePlacement(query, config);
-  for (int node : query.sampled_nodes) {
-    if (!query.selected_kv_mask[node]) {
-      continue;
+struct KVBankPlacement {
+  std::vector<int> item_counts;
+  std::vector<double> qk_groups;
+  std::vector<double> pv_groups;
+  std::vector<double> key_bytes;
+  std::vector<double> value_bytes;
+};
+
+KVBankPlacement PlaceKVItems(const QuerySample& query,
+                             const SimulationConfig& config,
+                             const std::string& graph_placement,
+                             const std::string& kv_placement) {
+  const int total_banks = config.topology.total_banks();
+  KVBankPlacement result;
+  result.item_counts.assign(total_banks, 0);
+  result.qk_groups.assign(total_banks, 0.0);
+  result.pv_groups.assign(total_banks, 0.0);
+  result.key_bytes.assign(total_banks, 0.0);
+  result.value_bytes.assign(total_banks, 0.0);
+  std::vector<int> item_banks(query.kv_work_items.size(), 0);
+
+  if (kv_placement == kKVPlacementBalanced) {
+    std::vector<size_t> order(query.kv_work_items.size());
+    std::iota(order.begin(), order.end(), 0);
+    std::sort(order.begin(), order.end(), [&](size_t lhs, size_t rhs) {
+      const auto& lhs_item = query.kv_work_items[lhs];
+      const auto& rhs_item = query.kv_work_items[rhs];
+      const double lhs_work = lhs_item.qk_groups + lhs_item.pv_groups;
+      const double rhs_work = rhs_item.qk_groups + rhs_item.pv_groups;
+      return lhs_work == rhs_work ? lhs_item.item_index < rhs_item.item_index
+                                  : lhs_work > rhs_work;
+    });
+    std::vector<double> bank_work(total_banks, 0.0);
+    for (size_t item_position : order) {
+      int best_bank = 0;
+      for (int bank = 1; bank < total_banks; ++bank) {
+        if (bank_work[bank] < bank_work[best_bank]) {
+          best_bank = bank;
+        }
+      }
+      item_banks[item_position] = best_bank;
+      bank_work[best_bank] += query.kv_work_items[item_position].qk_groups +
+                              query.kv_work_items[item_position].pv_groups;
     }
-    int bank = 0;
-    if (placement == kPlacementDegreeBalanced) {
-      bank = degree_balanced.at(node);
-    } else {
-      bank = NodeBankHash(node, config);
+  } else if (kv_placement == kKVPlacementLegacy) {
+    const auto degree_balanced =
+        BuildDegreeBalancedNodePlacement(query, config);
+    for (size_t index = 0; index < query.kv_work_items.size(); ++index) {
+      const int node = query.kv_work_items[index].legacy_node;
+      if (node < 0) {
+        throw std::runtime_error(
+            "legacy_graph_coupled KV placement requires synthetic nodes");
+      }
+      item_banks[index] = graph_placement == kPlacementDegreeBalanced
+                              ? degree_balanced.at(node)
+                              : NodeBankHash(node, config);
     }
-    counts[PositiveModulo(bank, config.topology.total_banks())]++;
+  } else if (kv_placement == kKVPlacementHash) {
+    for (size_t index = 0; index < query.kv_work_items.size(); ++index) {
+      const uint32_t hash =
+          StableStringHash(query.kv_work_items[index].cache_key) ^
+          static_cast<uint32_t>(config.suite.seed);
+      item_banks[index] = hash % total_banks;
+    }
+  } else {
+    throw std::runtime_error("Unknown KV storage placement: " + kv_placement);
   }
-  return counts;
+
+  for (size_t index = 0; index < query.kv_work_items.size(); ++index) {
+    const int bank = PositiveModulo(item_banks[index], total_banks);
+    const KVWorkItem& item = query.kv_work_items[index];
+    result.item_counts[bank]++;
+    result.qk_groups[bank] += item.qk_groups;
+    result.pv_groups[bank] += item.pv_groups;
+    result.key_bytes[bank] += item.selected_key_bytes;
+    result.value_bytes[bank] += item.selected_value_bytes;
+  }
+  return result;
 }
 
 KVPlacementDiagnosis DiagnoseKVPlacement(
@@ -1267,9 +1729,9 @@ KVPlacementDiagnosis DiagnoseKVPlacement(
 Diagnosis DiagnoseLocalCombine(const QuerySample& query,
                                const SimulationConfig& config) {
   const int groups_per_head = GroupsPerHead(config);
-  const double group_multiplier =
-      1.0 * config.model.memory_tokens * config.model.gnn_heads *
-      groups_per_head;
+  const double group_multiplier = 1.0 * config.model.memory_tokens *
+                                  config.model.gnn_heads * groups_per_head *
+                                  query.gnn_layer_count;
   std::map<std::pair<int, int>, int> bank_dst_edges;
   std::map<std::pair<int, int>, int> pc_dst_edges;
   std::vector<int> bank_counts(config.topology.total_banks(), 0);
@@ -1348,27 +1810,33 @@ void SetBottleneck(
 
 QueryResult SimulateQuery(const SimulationConfig& config,
                           const QuerySample& query,
-                          const std::string& placement,
-                          const std::string& baseline,
-                          int memory_token_tile) {
+                          const std::string& graph_placement,
+                          const std::string& kv_placement,
+                          const std::string& baseline, int memory_token_tile) {
   const int groups_per_head = GroupsPerHead(config);
   const int num_token_tiles =
       CeilDiv(config.model.memory_tokens, memory_token_tile);
   const int selected_kv_count = CountSelectedKV(query);
   const int edge_count = static_cast<int>(query.edges.size());
-  const double score_groups =
-      1.0 * edge_count * config.model.memory_tokens * config.model.gnn_heads *
-      groups_per_head;
+  const double score_groups = 1.0 * edge_count * config.model.memory_tokens *
+                              config.model.gnn_heads * groups_per_head *
+                              query.gnn_layer_count;
   const double message_groups = score_groups;
-  const double cached_kv_groups =
-      1.0 * selected_kv_count * config.model.suffix_layers *
-      config.model.text_len * config.model.gnn_heads * groups_per_head;
+  double cached_qk_groups = 0.0;
+  double cached_pv_groups = 0.0;
+  for (const auto& item : query.kv_work_items) {
+    cached_qk_groups += item.qk_groups;
+    cached_pv_groups += item.pv_groups;
+  }
+  const double cached_kv_groups = std::max(cached_qk_groups, cached_pv_groups);
 
   std::set<int> active_banks;
   std::set<int> active_pcs;
   std::vector<int> edge_count_by_bank(config.topology.total_banks(), 0);
-  std::vector<int> selected_count_by_bank =
-      SelectedKVCountByBank(query, config, placement);
+  const KVBankPlacement kv_bank_placement =
+      PlaceKVItems(query, config, graph_placement, kv_placement);
+  const std::vector<int>& selected_count_by_bank =
+      kv_bank_placement.item_counts;
   for (const auto& edge : query.edges) {
     active_banks.insert(edge.bank);
     active_pcs.insert(edge.pseudo_channel);
@@ -1383,25 +1851,73 @@ QueryResult SimulateQuery(const SimulationConfig& config,
 
   QueryResult result;
   result.workload = query.workload;
-  result.placement = placement;
+  result.workload_mode = query.workload_mode;
+  result.dataset = query.dataset;
+  result.split = query.split;
+  result.evaluation_role = query.evaluation_role;
+  result.trace_query_id = query.trace_query_id;
+  result.trace_source_path = query.trace_source_path;
+  result.selection_policy = query.selection_policy;
+  result.placement = graph_placement;
+  result.graph_compute_placement = graph_placement;
+  result.kv_storage_placement = kv_placement;
   result.baseline = baseline;
   result.query_id = query.query_id;
+  result.trace_order = query.trace_order;
+  result.runtime_query_index = query.runtime_query_index;
   result.target_node = query.target_node;
+  result.target_node_count = query.target_node_count;
+  result.question_node_count = query.question_node_count;
   result.memory_token_tile = memory_token_tile;
   result.num_token_tiles = num_token_tiles;
   result.sampled_node_count = static_cast<int>(query.sampled_nodes.size());
   result.sampled_edge_count = edge_count;
+  result.total_item_count = query.total_item_count;
+  result.node_text_item_count = query.node_text_item_count;
+  result.edge_text_item_count = query.edge_text_item_count;
   result.selected_kv_count = selected_kv_count;
+  result.selected_key_item_count = query.selected_key_item_count;
+  result.selected_value_item_count = query.selected_value_item_count;
+  result.cacheable_item_count = query.cacheable_item_count;
+  result.nog_count = query.nog_count;
+  result.gnn_layer_count = query.gnn_layer_count;
+  result.selected_key_ratio = query.selected_key_ratio;
+  result.selected_value_ratio = query.selected_value_ratio;
+  result.selected_kv_ratio = query.selected_kv_ratio;
   result.selected_kv_ratio_vs_sampled_nodes =
-      query.sampled_nodes.empty()
+      query.cacheable_item_count == 0
           ? 0.0
-          : 1.0 * selected_kv_count / query.sampled_nodes.size();
+          : 1.0 * selected_kv_count / query.cacheable_item_count;
   result.selected_kv_ratio_vs_full_graph =
       query.full_graph_nodes == 0
           ? 0.0
           : 1.0 * selected_kv_count / query.full_graph_nodes;
   result.selected_kv_bytes =
-      selected_kv_count * TextKVBytesPerItem(config.model);
+      query.selected_key_bytes + query.selected_value_bytes;
+  result.memory_cache_bytes = query.memory_cache_bytes;
+  result.edge_cache_bytes = query.edge_cache_bytes;
+  result.full_key_bytes = query.full_key_bytes;
+  result.full_value_bytes = query.full_value_bytes;
+  result.selected_key_bytes = query.selected_key_bytes;
+  result.selected_value_bytes = query.selected_value_bytes;
+  result.persistent_cache_bytes = query.persistent_cache_bytes;
+  result.runtime_loaded_cache_bytes = query.runtime_loaded_cache_bytes;
+  result.cache_inventory_sequence_tokens =
+      query.cache_inventory_sequence_tokens;
+  result.cache_inventory_valid_text_tokens =
+      query.cache_inventory_valid_text_tokens;
+  result.selected_sequence_tokens = query.selected_sequence_tokens;
+  result.trace_cached_qk_groups = cached_qk_groups;
+  result.trace_cached_pv_groups = cached_pv_groups;
+  result.runtime_qk_elements = query.runtime_qk_elements;
+  result.runtime_pv_output_elements = query.runtime_pv_output_elements;
+  result.nog_runtime_qk_elements = query.nog_runtime_qk_elements;
+  result.nog_runtime_pv_output_elements = query.nog_runtime_pv_output_elements;
+  for (const auto& item : query.kv_work_items) {
+    result.valid_text_tokens += item.valid_text_tokens;
+    result.stored_key_tokens += item.stored_key_tokens;
+    result.stored_value_tokens += item.stored_value_tokens;
+  }
   result.active_banks = static_cast<int>(active_banks.size());
   result.active_pseudo_channels = static_cast<int>(active_pcs.size());
   result.graph_sanity = DiagnoseGraph(query, config);
@@ -1463,9 +1979,9 @@ QueryResult SimulateQuery(const SimulationConfig& config,
     return result;
   }
 
-  result.q_broadcast_bytes =
-      1.0 * num_token_tiles * active_banks.size() * config.model.gnn_heads *
-      config.model.head_dim * config.precision.q8_bytes;
+  result.q_broadcast_bytes = 1.0 * num_token_tiles * active_banks.size() *
+                             config.model.gnn_heads * config.model.head_dim *
+                             config.precision.q8_bytes * query.gnn_layer_count;
   result.score_traffic_bytes =
       score_groups / groups_per_head * config.precision.score_bytes;
   result.p_return_traffic_bytes =
@@ -1478,11 +1994,10 @@ QueryResult SimulateQuery(const SimulationConfig& config,
   for (int bank = 0; bank < config.topology.total_banks(); ++bank) {
     const double bank_score_groups =
         1.0 * edge_count_by_bank[bank] * config.model.memory_tokens *
-        config.model.gnn_heads * groups_per_head;
+        config.model.gnn_heads * groups_per_head * query.gnn_layer_count;
     const double bank_message_groups = bank_score_groups;
-    const double bank_kv_groups =
-        1.0 * selected_count_by_bank[bank] * config.model.suffix_layers *
-        config.model.text_len * config.model.gnn_heads * groups_per_head;
+    const double bank_qk_groups = kv_bank_placement.qk_groups[bank];
+    const double bank_pv_groups = kv_bank_placement.pv_groups[bank];
     const double bank_score_cycles =
         bank_score_groups *
         (config.pe.q8k8_group_cycles + config.pe.scale_group_cycles) /
@@ -1493,9 +2008,10 @@ QueryResult SimulateQuery(const SimulationConfig& config,
          (baseline == kPIMLocalCombine ? config.pe.vadd_group_cycles : 0.0)) /
         config.topology.pe_per_bank;
     const double bank_kv_cycles =
-        bank_kv_groups *
-        (config.pe.q8k2_lut_group_cycles + config.pe.p8v2_lut_group_cycles +
-         2.0 * config.pe.scale_group_cycles) /
+        (bank_qk_groups *
+             (config.pe.q8k2_lut_group_cycles + config.pe.scale_group_cycles) +
+         bank_pv_groups *
+             (config.pe.p8v2_lut_group_cycles + config.pe.scale_group_cycles)) /
         config.topology.pe_per_bank;
     const double bank_q8k8_vdot_cycles =
         bank_score_groups * config.pe.q8k8_group_cycles /
@@ -1514,15 +2030,15 @@ QueryResult SimulateQuery(const SimulationConfig& config,
             ? bank_message_groups * config.pe.vadd_group_cycles /
                   config.topology.pe_per_bank
             : 0.0;
-    const double bank_q8k2_lut_cycles =
-        bank_kv_groups * config.pe.q8k2_lut_group_cycles /
-        config.topology.pe_per_bank;
-    const double bank_p8v2_lut_cycles =
-        bank_kv_groups * config.pe.p8v2_lut_group_cycles /
-        config.topology.pe_per_bank;
-    const double bank_kv_scale_cycles =
-        bank_kv_groups * 2.0 * config.pe.scale_group_cycles /
-        config.topology.pe_per_bank;
+    const double bank_q8k2_lut_cycles = bank_qk_groups *
+                                        config.pe.q8k2_lut_group_cycles /
+                                        config.topology.pe_per_bank;
+    const double bank_p8v2_lut_cycles = bank_pv_groups *
+                                        config.pe.p8v2_lut_group_cycles /
+                                        config.topology.pe_per_bank;
+    const double bank_kv_scale_cycles = (bank_qk_groups + bank_pv_groups) *
+                                        config.pe.scale_group_cycles /
+                                        config.topology.pe_per_bank;
     if (bank_score_cycles > score_cycles) {
       result.score_bottleneck_bank = bank;
     }
@@ -1562,14 +2078,15 @@ QueryResult SimulateQuery(const SimulationConfig& config,
       groups_per_head * buffer_per_active_group;
   result.pc_reducer_buffer_max_bytes =
       result.diagnosis.pc_group_count_after_pc_reduce /
-      std::max(1, config.model.memory_tokens) * buffer_per_active_group;
+      std::max(1, config.model.memory_tokens) /
+      std::max(1, query.gnn_layer_count) * buffer_per_active_group;
 
   if (baseline != kPIMNoLocalCombine && baseline != kPIMLocalCombine) {
     throw std::runtime_error("Unknown baseline: " + baseline);
   }
-  const double group_multiplier =
-      1.0 * config.model.memory_tokens * config.model.gnn_heads *
-      groups_per_head;
+  const double group_multiplier = 1.0 * config.model.memory_tokens *
+                                  config.model.gnn_heads * groups_per_head *
+                                  query.gnn_layer_count;
   const double message_bytes_per_group =
       config.tile.channel_group * config.precision.partial_msg_bytes;
   std::vector<std::set<int>> destinations_by_bank(
@@ -1623,13 +2140,14 @@ QueryResult SimulateQuery(const SimulationConfig& config,
       active_banks.empty()
           ? 0.0
           : 1.0 * num_token_tiles * config.model.gnn_heads *
-                config.model.head_dim * config.precision.q8_bytes;
+                config.model.head_dim * config.precision.q8_bytes *
+                query.gnn_layer_count;
   if (result.q_broadcast_bytes > 0.0) {
     result.q_broadcast_cycles =
-        num_token_tiles * config.communication.q_broadcast_startup_cycles +
+        num_token_tiles * query.gnn_layer_count *
+            config.communication.q_broadcast_startup_cycles +
         result.q_broadcast_critical_bank_bytes /
-            config.communication
-                .q_broadcast_bandwidth_bytes_per_cycle_per_bank;
+            config.communication.q_broadcast_bandwidth_bytes_per_cycle_per_bank;
   }
 
   result.bank_to_pc_total_bytes =
@@ -1653,13 +2171,13 @@ QueryResult SimulateQuery(const SimulationConfig& config,
                               bank_to_pc_bytes_by_pc.end());
   if (result.bank_to_pc_total_bytes > 0.0) {
     result.bank_to_pc_communication_cycles =
-        num_token_tiles * config.communication.bank_to_pc_startup_cycles +
-        std::max(
-            result.bank_to_pc_critical_bank_bytes /
-                config.communication
-                    .bank_to_pc_bandwidth_bytes_per_cycle_per_bank,
-            result.bank_to_pc_critical_pc_bytes /
-                config.reducer.pc_input_bandwidth_bytes_per_cycle);
+        num_token_tiles * query.gnn_layer_count *
+            config.communication.bank_to_pc_startup_cycles +
+        std::max(result.bank_to_pc_critical_bank_bytes /
+                     config.communication
+                         .bank_to_pc_bandwidth_bytes_per_cycle_per_bank,
+                 result.bank_to_pc_critical_pc_bytes /
+                     config.reducer.pc_input_bandwidth_bytes_per_cycle);
   }
 
   result.pc_to_global_total_bytes =
@@ -1672,20 +2190,21 @@ QueryResult SimulateQuery(const SimulationConfig& config,
                               pc_to_global_bytes_by_pc.end());
   if (result.pc_to_global_total_bytes > 0.0) {
     result.pc_to_global_communication_cycles =
-        num_token_tiles * config.communication.pc_to_global_startup_cycles +
-        std::max(
-            result.pc_to_global_critical_pc_bytes /
-                config.communication
-                    .pc_to_global_bandwidth_bytes_per_cycle_per_pc,
-            result.pc_to_global_total_bytes /
-                config.reducer.global_input_bandwidth_bytes_per_cycle);
+        num_token_tiles * query.gnn_layer_count *
+            config.communication.pc_to_global_startup_cycles +
+        std::max(result.pc_to_global_critical_pc_bytes /
+                     config.communication
+                         .pc_to_global_bandwidth_bytes_per_cycle_per_pc,
+                 result.pc_to_global_total_bytes /
+                     config.reducer.global_input_bandwidth_bytes_per_cycle);
   }
 
   result.global_to_npu_bytes =
       result.global_reducer_output_groups * message_bytes_per_group;
   if (result.global_to_npu_bytes > 0.0) {
     result.global_to_npu_communication_cycles =
-        num_token_tiles * config.communication.global_to_npu_startup_cycles +
+        num_token_tiles * query.gnn_layer_count *
+            config.communication.global_to_npu_startup_cycles +
         result.global_to_npu_bytes /
             config.communication.global_to_npu_bandwidth_bytes_per_cycle;
   }
@@ -1722,8 +2241,8 @@ QueryResult SimulateQuery(const SimulationConfig& config,
       result.q_broadcast_cycles + result.bank_to_pc_communication_cycles +
       result.pc_to_global_communication_cycles +
       result.global_to_npu_communication_cycles;
-  result.scheduling_cycles =
-      num_token_tiles * config.pe.scheduling_overhead_per_tile_cycles;
+  result.scheduling_cycles = num_token_tiles * query.gnn_layer_count *
+                             config.pe.scheduling_overhead_per_tile_cycles;
   result.total_cycles = result.compute_cycles + result.communication_cycles +
                         result.reducer_cycles + result.scheduling_cycles;
   result.latency_ns = result.total_cycles * config.pe.clock_ns;
@@ -1793,10 +2312,27 @@ void WritePerQueryCSV(const std::string& path,
   if (!csv.is_open()) {
     throw std::runtime_error("Cannot open per-query CSV: " + path);
   }
-  csv << "workload,placement,baseline,query_id,target_node,memory_token_tile,"
+  csv << "workload,workload_mode,dataset,split,evaluation_role,trace_order,"
+         "runtime_query_index,trace_query_id,trace_source_path,placement,"
+         "selection_policy,"
+         "graph_compute_placement,kv_storage_placement,baseline,query_id,"
+         "target_node,target_node_count,question_node_count,memory_token_tile,"
          "num_token_tiles,sampled_node_count,sampled_edge_count,"
-         "selected_kv_count,selected_kv_ratio_vs_sampled_nodes,"
+         "total_item_count,node_text_item_count,edge_text_item_count,"
+         "selected_kv_count,selected_key_item_count,"
+         "selected_value_item_count,cacheable_item_count,nog_count,"
+         "gnn_layer_count,selected_key_ratio,selected_value_ratio,"
+         "selected_kv_ratio,selected_kv_ratio_vs_sampled_nodes,"
          "selected_kv_ratio_vs_full_graph,selected_kv_bytes,"
+         "memory_cache_bytes,edge_cache_bytes,full_key_bytes,full_value_bytes,"
+         "selected_key_bytes,selected_value_bytes,persistent_cache_bytes,"
+         "runtime_loaded_cache_bytes,cache_inventory_sequence_tokens,"
+         "cache_inventory_valid_text_tokens,selected_sequence_tokens,"
+         "valid_text_tokens,stored_key_tokens,"
+         "stored_value_tokens,trace_cached_qk_groups,"
+         "trace_cached_pv_groups,runtime_qk_elements,"
+         "runtime_pv_output_elements,nog_runtime_qk_elements,"
+         "nog_runtime_pv_output_elements,"
          "selected_kv_active_banks,selected_kv_items_per_bank_mean,"
          "selected_kv_items_per_bank_p95,selected_kv_items_per_bank_max,"
          "selected_kv_bank_imbalance,selected_kv_bank_collision_ratio,"
@@ -1854,12 +2390,35 @@ void WritePerQueryCSV(const std::string& path,
     const GraphSanity& g = r.graph_sanity;
     const PlacementValidation& p = r.placement_validation;
     const KVPlacementDiagnosis& k = r.kv_placement_diagnosis;
-    csv << r.workload << "," << r.placement << "," << r.baseline << ","
-        << r.query_id << "," << r.target_node << "," << r.memory_token_tile
-        << "," << r.num_token_tiles << "," << r.sampled_node_count << ","
-        << r.sampled_edge_count << "," << r.selected_kv_count << ","
-        << r.selected_kv_ratio_vs_sampled_nodes << ","
-        << r.selected_kv_ratio_vs_full_graph << "," << r.selected_kv_bytes
+    csv << r.workload << "," << r.workload_mode << "," << r.dataset << ","
+        << r.split << "," << r.evaluation_role << "," << r.trace_order << ","
+        << r.runtime_query_index << "," << r.trace_query_id << ","
+        << r.trace_source_path << "," << r.placement << ","
+        << r.selection_policy << "," << r.graph_compute_placement << ","
+        << r.kv_storage_placement << "," << r.baseline << "," << r.query_id
+        << "," << r.target_node << "," << r.target_node_count << ","
+        << r.question_node_count << "," << r.memory_token_tile << ","
+        << r.num_token_tiles << "," << r.sampled_node_count << ","
+        << r.sampled_edge_count << "," << r.total_item_count << ","
+        << r.node_text_item_count << "," << r.edge_text_item_count << ","
+        << r.selected_kv_count << "," << r.selected_key_item_count << ","
+        << r.selected_value_item_count << "," << r.cacheable_item_count << ","
+        << r.nog_count << "," << r.gnn_layer_count << ","
+        << r.selected_key_ratio << "," << r.selected_value_ratio << ","
+        << r.selected_kv_ratio << "," << r.selected_kv_ratio_vs_sampled_nodes
+        << "," << r.selected_kv_ratio_vs_full_graph << ","
+        << r.selected_kv_bytes << "," << r.memory_cache_bytes << ","
+        << r.edge_cache_bytes << "," << r.full_key_bytes << ","
+        << r.full_value_bytes << "," << r.selected_key_bytes << ","
+        << r.selected_value_bytes << "," << r.persistent_cache_bytes << ","
+        << r.runtime_loaded_cache_bytes << ","
+        << r.cache_inventory_sequence_tokens << ","
+        << r.cache_inventory_valid_text_tokens << ","
+        << r.selected_sequence_tokens << "," << r.valid_text_tokens << ","
+        << r.stored_key_tokens << "," << r.stored_value_tokens << ","
+        << r.trace_cached_qk_groups << "," << r.trace_cached_pv_groups << ","
+        << r.runtime_qk_elements << "," << r.runtime_pv_output_elements << ","
+        << r.nog_runtime_qk_elements << "," << r.nog_runtime_pv_output_elements
         << "," << k.active_banks << "," << k.items_per_bank_mean << ","
         << k.items_per_bank_p95 << "," << k.items_per_bank_max << ","
         << k.bank_imbalance << "," << k.bank_collision_ratio << ","
@@ -1875,59 +2434,53 @@ void WritePerQueryCSV(const std::string& path,
         << d.edge_message_count_before_local_combine << ","
         << d.bank_local_group_count_after_combine << ","
         << d.pc_group_count_after_pc_reduce << ","
-        << d.local_combine_reduction_ratio << "," << d.pc_reduction_ratio
-        << "," << d.avg_edges_per_bank_dst << ","
-        << d.p95_edges_per_bank_dst << "," << d.max_edges_per_bank_dst << ","
+        << d.local_combine_reduction_ratio << "," << d.pc_reduction_ratio << ","
+        << d.avg_edges_per_bank_dst << "," << d.p95_edges_per_bank_dst << ","
+        << d.max_edges_per_bank_dst << ","
         << d.message_traffic_before_local_combine << ","
         << d.message_traffic_after_local_combine << "," << d.bank_imbalance
-        << "," << d.pseudo_channel_imbalance << "," << r.q8k8_vdot_cycles
-        << "," << r.gnn_score_scale_cycles << "," << r.p8v8_vmul_cycles
-        << "," << r.gnn_value_scale_cycles << "," << r.local_vadd_cycles
-        << "," << r.q8k2_lut_cycles << "," << r.p8v2_lut_cycles << ","
+        << "," << d.pseudo_channel_imbalance << "," << r.q8k8_vdot_cycles << ","
+        << r.gnn_score_scale_cycles << "," << r.p8v8_vmul_cycles << ","
+        << r.gnn_value_scale_cycles << "," << r.local_vadd_cycles << ","
+        << r.q8k2_lut_cycles << "," << r.p8v2_lut_cycles << ","
         << r.cached_kv_scale_cycles << "," << r.pc_reduce_cycles << ","
         << r.global_reduce_cycles << "," << r.h100_cache_read_cycles << ","
-        << r.h100_int2_unpack_cycles << ","
-        << r.h100_scale_dequant_cycles << ","
-        << r.h100_layout_conversion_cycles << ","
+        << r.h100_int2_unpack_cycles << "," << r.h100_scale_dequant_cycles
+        << "," << r.h100_layout_conversion_cycles << ","
         << r.h100_irregular_gather_penalty_cycles << ","
-        << r.h100_small_batch_penalty_cycles << "," << r.bottleneck_stage
-        << "," << r.bottleneck_cycles << "," << r.bottleneck_fraction << ","
+        << r.h100_small_batch_penalty_cycles << "," << r.bottleneck_stage << ","
+        << r.bottleneck_cycles << "," << r.bottleneck_fraction << ","
         << r.score_bottleneck_bank << "," << r.message_bottleneck_bank << ","
         << r.cached_kv_bottleneck_bank << "," << g.duplicate_edge_count << ","
         << g.duplicate_edge_ratio << "," << g.unique_src_dst_count << ","
-        << g.in_degree_mean << "," << g.in_degree_p50 << ","
-        << g.in_degree_p95 << "," << g.in_degree_max << ","
-        << g.out_degree_mean << "," << g.out_degree_p50 << ","
-        << g.out_degree_p95 << "," << g.out_degree_max << ","
-        << g.dst_degree_hist_0 << "," << g.dst_degree_hist_1 << ","
-        << g.dst_degree_hist_2_3 << ","
+        << g.in_degree_mean << "," << g.in_degree_p50 << "," << g.in_degree_p95
+        << "," << g.in_degree_max << "," << g.out_degree_mean << ","
+        << g.out_degree_p50 << "," << g.out_degree_p95 << ","
+        << g.out_degree_max << "," << g.dst_degree_hist_0 << ","
+        << g.dst_degree_hist_1 << "," << g.dst_degree_hist_2_3 << ","
         << g.dst_degree_hist_4_7 << "," << g.dst_degree_hist_8_15 << ","
         << g.dst_degree_hist_16_31 << "," << g.dst_degree_hist_32_63 << ","
         << g.dst_degree_hist_64_plus << "," << g.unique_source_banks << ","
         << p.mapping_difference_ratio_vs_hash << "," << p.edge_active_banks
-        << "," << p.edge_active_pseudo_channels << ","
-        << p.bank_edge_count_mean << "," << p.bank_edge_count_p50 << ","
-        << p.bank_edge_count_p95 << "," << p.bank_edge_count_max << ","
-        << p.pc_edge_count_mean << "," << p.pc_edge_count_p50 << ","
-        << p.pc_edge_count_p95 << "," << p.pc_edge_count_max << ","
-        << p.sharded_destination_count << "," << p.total_destination_shards
-        << "," << p.average_shards_per_destination << ","
-        << p.max_shards_per_destination << "," << p.active_bank_histogram
+        << "," << p.edge_active_pseudo_channels << "," << p.bank_edge_count_mean
+        << "," << p.bank_edge_count_p50 << "," << p.bank_edge_count_p95 << ","
+        << p.bank_edge_count_max << "," << p.pc_edge_count_mean << ","
+        << p.pc_edge_count_p50 << "," << p.pc_edge_count_p95 << ","
+        << p.pc_edge_count_max << "," << p.sharded_destination_count << ","
+        << p.total_destination_shards << "," << p.average_shards_per_destination
+        << "," << p.max_shards_per_destination << "," << p.active_bank_histogram
         << "," << p.active_pc_histogram << "," << r.compute_cycles << ","
         << r.communication_cycles << "," << r.q_broadcast_cycles << ","
         << r.bank_to_pc_communication_cycles << ","
         << r.pc_to_global_communication_cycles << ","
-        << r.global_to_npu_communication_cycles << ","
-        << r.critical_path_cycles << "," << r.critical_path_latency_ns << ","
-        << r.traffic_stall_fraction << ","
-        << r.q_broadcast_critical_bank_bytes << ","
-        << r.bank_to_pc_total_bytes << ","
-        << r.bank_to_pc_critical_bank_bytes << ","
-        << r.bank_to_pc_critical_pc_bytes << ","
-        << r.pc_to_global_total_bytes << ","
-        << r.pc_to_global_critical_pc_bytes << "," << r.global_to_npu_bytes
-        << "," << r.pc_reducer_input_groups << ","
-        << r.pc_reducer_output_groups << ","
+        << r.global_to_npu_communication_cycles << "," << r.critical_path_cycles
+        << "," << r.critical_path_latency_ns << "," << r.traffic_stall_fraction
+        << "," << r.q_broadcast_critical_bank_bytes << ","
+        << r.bank_to_pc_total_bytes << "," << r.bank_to_pc_critical_bank_bytes
+        << "," << r.bank_to_pc_critical_pc_bytes << ","
+        << r.pc_to_global_total_bytes << "," << r.pc_to_global_critical_pc_bytes
+        << "," << r.global_to_npu_bytes << "," << r.pc_reducer_input_groups
+        << "," << r.pc_reducer_output_groups << ","
         << r.global_reducer_input_groups << ","
         << r.global_reducer_output_groups << "\n";
   }
@@ -1935,6 +2488,16 @@ void WritePerQueryCSV(const std::string& path,
 
 double MeanResultField(const std::vector<const QueryResult*>& group,
                        double QueryResult::*field) {
+  std::vector<double> values;
+  values.reserve(group.size());
+  for (const auto* result : group) {
+    values.push_back(result->*field);
+  }
+  return Mean(values);
+}
+
+double MeanResultIntField(const std::vector<const QueryResult*>& group,
+                          int QueryResult::* field) {
   std::vector<double> values;
   values.reserve(group.size());
   for (const auto* result : group) {
@@ -2018,8 +2581,25 @@ void WriteAggregateCSV(const std::string& path,
   if (!csv.is_open()) {
     throw std::runtime_error("Cannot open aggregate CSV: " + path);
   }
-  csv << "workload,placement,baseline,memory_token_tile,num_queries,"
+  csv << "workload,workload_mode,dataset,split,evaluation_role,"
+         "selection_policy,placement,"
+         "graph_compute_placement,kv_storage_placement,baseline,"
+         "memory_token_tile,num_queries,"
          "mean_latency_ns,p50_latency_ns,p95_latency_ns,selected_kv_count,"
+         "selected_key_item_count,selected_value_item_count,"
+         "cacheable_item_count,nog_count,gnn_layer_count,"
+         "target_node_count,question_node_count,total_item_count,"
+         "node_text_item_count,edge_text_item_count,"
+         "selected_key_ratio,selected_value_ratio,selected_kv_ratio,"
+         "memory_cache_bytes,edge_cache_bytes,full_key_bytes,full_value_bytes,"
+         "selected_key_bytes,selected_value_bytes,persistent_cache_bytes,"
+         "runtime_loaded_cache_bytes,cache_inventory_sequence_tokens,"
+         "cache_inventory_valid_text_tokens,selected_sequence_tokens,"
+         "valid_text_tokens,stored_key_tokens,"
+         "stored_value_tokens,trace_cached_qk_groups,"
+         "trace_cached_pv_groups,runtime_qk_elements,"
+         "runtime_pv_output_elements,nog_runtime_qk_elements,"
+         "nog_runtime_pv_output_elements,"
          "selected_kv_active_banks,selected_kv_items_per_bank_mean,"
          "selected_kv_items_per_bank_p95,selected_kv_items_per_bank_max,"
          "selected_kv_bank_imbalance,selected_kv_bank_collision_ratio,"
@@ -2077,275 +2657,389 @@ void WriteAggregateCSV(const std::string& path,
          "mean_global_reducer_input_groups,"
          "mean_global_reducer_output_groups\n";
   csv << std::fixed << std::setprecision(6);
+  const std::vector<std::string> splits =
+      config.workload_mode == "trace" ? config.trace.loader.splits
+                                      : std::vector<std::string>{"synthetic"};
   for (const auto& workload : config.suite.workloads) {
-    for (const auto& placement : config.placements) {
-      for (const auto& baseline : config.baselines) {
-        for (int tile : config.tile.memory_token_tiles) {
-          std::vector<const QueryResult*> group;
-          for (const auto& r : results) {
-            if (r.workload == workload.name && r.placement == placement &&
-                r.baseline == baseline && r.memory_token_tile == tile) {
-              group.push_back(&r);
+    for (const auto& split : splits) {
+      for (const auto& placement : config.placements) {
+        for (const auto& kv_placement : config.kv_placements) {
+          for (const auto& baseline : config.baselines) {
+            for (int tile : config.tile.memory_token_tiles) {
+              std::vector<const QueryResult*> group;
+              for (const auto& r : results) {
+                if (r.workload == workload.name && r.split == split &&
+                    r.graph_compute_placement == placement &&
+                    r.kv_storage_placement == kv_placement &&
+                    r.baseline == baseline && r.memory_token_tile == tile) {
+                  group.push_back(&r);
+                }
+              }
+              if (group.empty()) {
+                continue;
+              }
+              std::vector<double> latency;
+              std::vector<double> selected;
+              std::vector<double> q_broadcast;
+              std::vector<double> score_traffic;
+              std::vector<double> p_return;
+              std::vector<double> message_reduce;
+              std::vector<double> local_buffer;
+              std::vector<double> pc_buffer;
+              std::vector<double> active_banks;
+              std::vector<double> active_pcs;
+              std::vector<double> pe_util;
+              std::vector<double> reducer_util;
+              std::vector<double> bank_imbalance;
+              std::vector<double> pc_imbalance;
+              std::vector<double> local_reduction;
+              std::vector<double> pc_reduction;
+              std::vector<double> avg_edges;
+              std::vector<double> p95_edges;
+              std::vector<double> max_edges;
+              std::vector<double> traffic_before;
+              std::vector<double> traffic_after;
+              for (const auto* r : group) {
+                latency.push_back(r->latency_ns);
+                selected.push_back(r->selected_kv_count);
+                q_broadcast.push_back(r->q_broadcast_bytes);
+                score_traffic.push_back(r->score_traffic_bytes);
+                p_return.push_back(r->p_return_traffic_bytes);
+                message_reduce.push_back(r->message_reduce_traffic_bytes);
+                local_buffer.push_back(r->local_combine_buffer_max_bytes);
+                pc_buffer.push_back(r->pc_reducer_buffer_max_bytes);
+                active_banks.push_back(r->active_banks);
+                active_pcs.push_back(r->active_pseudo_channels);
+                pe_util.push_back(r->near_bank_pe_utilization);
+                reducer_util.push_back(r->reducer_utilization);
+                bank_imbalance.push_back(r->diagnosis.bank_imbalance);
+                pc_imbalance.push_back(r->diagnosis.pseudo_channel_imbalance);
+                local_reduction.push_back(
+                    r->diagnosis.local_combine_reduction_ratio);
+                pc_reduction.push_back(r->diagnosis.pc_reduction_ratio);
+                avg_edges.push_back(r->diagnosis.avg_edges_per_bank_dst);
+                p95_edges.push_back(r->diagnosis.p95_edges_per_bank_dst);
+                max_edges.push_back(r->diagnosis.max_edges_per_bank_dst);
+                traffic_before.push_back(
+                    r->diagnosis.message_traffic_before_local_combine);
+                traffic_after.push_back(
+                    r->diagnosis.message_traffic_after_local_combine);
+              }
+              const auto dominant_bottleneck = DominantBottleneck(group);
+              const auto dominant_cached_kv_bank = DominantResultIntField(
+                  group, &QueryResult::cached_kv_bottleneck_bank);
+              const QueryResult& representative = *group.front();
+              csv << workload.name << "," << representative.workload_mode << ","
+                  << representative.dataset << "," << split << ","
+                  << representative.evaluation_role << ","
+                  << representative.selection_policy << "," << placement << ","
+                  << placement << "," << kv_placement << "," << baseline << ","
+                  << tile << "," << group.size() << "," << Mean(latency) << ","
+                  << Percentile(latency, 0.50) << ","
+                  << Percentile(latency, 0.95) << "," << Mean(selected) << ","
+                  << MeanResultIntField(group,
+                                        &QueryResult::selected_key_item_count)
+                  << ","
+                  << MeanResultIntField(group,
+                                        &QueryResult::selected_value_item_count)
+                  << ","
+                  << MeanResultIntField(group,
+                                        &QueryResult::cacheable_item_count)
+                  << "," << MeanResultIntField(group, &QueryResult::nog_count)
+                  << ","
+                  << MeanResultIntField(group, &QueryResult::gnn_layer_count)
+                  << ","
+                  << MeanResultIntField(group, &QueryResult::target_node_count)
+                  << ","
+                  << MeanResultIntField(group,
+                                        &QueryResult::question_node_count)
+                  << ","
+                  << MeanResultIntField(group, &QueryResult::total_item_count)
+                  << ","
+                  << MeanResultIntField(group,
+                                        &QueryResult::node_text_item_count)
+                  << ","
+                  << MeanResultIntField(group,
+                                        &QueryResult::edge_text_item_count)
+                  << ","
+                  << MeanResultField(group, &QueryResult::selected_key_ratio)
+                  << ","
+                  << MeanResultField(group, &QueryResult::selected_value_ratio)
+                  << ","
+                  << MeanResultField(group, &QueryResult::selected_kv_ratio)
+                  << ","
+                  << MeanResultField(group, &QueryResult::memory_cache_bytes)
+                  << ","
+                  << MeanResultField(group, &QueryResult::edge_cache_bytes)
+                  << "," << MeanResultField(group, &QueryResult::full_key_bytes)
+                  << ","
+                  << MeanResultField(group, &QueryResult::full_value_bytes)
+                  << ","
+                  << MeanResultField(group, &QueryResult::selected_key_bytes)
+                  << ","
+                  << MeanResultField(group, &QueryResult::selected_value_bytes)
+                  << ","
+                  << MeanResultField(group,
+                                     &QueryResult::persistent_cache_bytes)
+                  << ","
+                  << MeanResultField(group,
+                                     &QueryResult::runtime_loaded_cache_bytes)
+                  << ","
+                  << MeanResultField(
+                         group, &QueryResult::cache_inventory_sequence_tokens)
+                  << ","
+                  << MeanResultField(
+                         group, &QueryResult::cache_inventory_valid_text_tokens)
+                  << ","
+                  << MeanResultField(group,
+                                     &QueryResult::selected_sequence_tokens)
+                  << ","
+                  << MeanResultField(group, &QueryResult::valid_text_tokens)
+                  << ","
+                  << MeanResultField(group, &QueryResult::stored_key_tokens)
+                  << ","
+                  << MeanResultField(group, &QueryResult::stored_value_tokens)
+                  << ","
+                  << MeanResultField(group,
+                                     &QueryResult::trace_cached_qk_groups)
+                  << ","
+                  << MeanResultField(group,
+                                     &QueryResult::trace_cached_pv_groups)
+                  << ","
+                  << MeanResultField(group, &QueryResult::runtime_qk_elements)
+                  << ","
+                  << MeanResultField(group,
+                                     &QueryResult::runtime_pv_output_elements)
+                  << ","
+                  << MeanResultField(group,
+                                     &QueryResult::nog_runtime_qk_elements)
+                  << ","
+                  << MeanResultField(
+                         group, &QueryResult::nog_runtime_pv_output_elements)
+                  << ","
+                  << MeanKVPlacementField(group,
+                                          &KVPlacementDiagnosis::active_banks)
+                  << ","
+                  << MeanKVPlacementField(
+                         group, &KVPlacementDiagnosis::items_per_bank_mean)
+                  << ","
+                  << MeanKVPlacementField(
+                         group, &KVPlacementDiagnosis::items_per_bank_p95)
+                  << ","
+                  << MeanKVPlacementField(
+                         group, &KVPlacementDiagnosis::items_per_bank_max)
+                  << ","
+                  << MeanKVPlacementField(group,
+                                          &KVPlacementDiagnosis::bank_imbalance)
+                  << ","
+                  << MeanKVPlacementField(
+                         group, &KVPlacementDiagnosis::bank_collision_ratio)
+                  << "," << dominant_cached_kv_bank.first << ","
+                  << dominant_cached_kv_bank.second << "," << Mean(q_broadcast)
+                  << "," << Mean(score_traffic) << "," << Mean(p_return) << ","
+                  << Mean(message_reduce) << "," << Mean(local_buffer) << ","
+                  << Mean(pc_buffer) << "," << Mean(active_banks) << ","
+                  << Mean(active_pcs) << "," << Mean(pe_util) << ","
+                  << Mean(reducer_util) << "," << Mean(bank_imbalance) << ","
+                  << Mean(pc_imbalance) << "," << Mean(local_reduction) << ","
+                  << Mean(pc_reduction) << "," << Mean(avg_edges) << ","
+                  << Mean(p95_edges) << "," << Mean(max_edges) << ","
+                  << Mean(traffic_before) << "," << Mean(traffic_after) << ","
+                  << MeanResultField(group, &QueryResult::gnn_score_cycles)
+                  << ","
+                  << MeanResultField(group, &QueryResult::gnn_message_cycles)
+                  << ","
+                  << MeanResultField(group, &QueryResult::cached_kv_cycles)
+                  << "," << MeanResultField(group, &QueryResult::reducer_cycles)
+                  << ","
+                  << MeanResultField(group, &QueryResult::scheduling_cycles)
+                  << ","
+                  << MeanResultField(group, &QueryResult::q8k8_vdot_cycles)
+                  << ","
+                  << MeanResultField(group,
+                                     &QueryResult::gnn_score_scale_cycles)
+                  << ","
+                  << MeanResultField(group, &QueryResult::p8v8_vmul_cycles)
+                  << ","
+                  << MeanResultField(group,
+                                     &QueryResult::gnn_value_scale_cycles)
+                  << ","
+                  << MeanResultField(group, &QueryResult::local_vadd_cycles)
+                  << ","
+                  << MeanResultField(group, &QueryResult::q8k2_lut_cycles)
+                  << ","
+                  << MeanResultField(group, &QueryResult::p8v2_lut_cycles)
+                  << ","
+                  << MeanResultField(group,
+                                     &QueryResult::cached_kv_scale_cycles)
+                  << ","
+                  << MeanResultField(group, &QueryResult::pc_reduce_cycles)
+                  << ","
+                  << MeanResultField(group, &QueryResult::global_reduce_cycles)
+                  << ","
+                  << MeanResultField(group,
+                                     &QueryResult::h100_cache_read_cycles)
+                  << ","
+                  << MeanResultField(group,
+                                     &QueryResult::h100_int2_unpack_cycles)
+                  << ","
+                  << MeanResultField(group,
+                                     &QueryResult::h100_scale_dequant_cycles)
+                  << ","
+                  << MeanResultField(
+                         group, &QueryResult::h100_layout_conversion_cycles)
+                  << ","
+                  << MeanResultField(
+                         group,
+                         &QueryResult::h100_irregular_gather_penalty_cycles)
+                  << ","
+                  << MeanResultField(
+                         group, &QueryResult::h100_small_batch_penalty_cycles)
+                  << "," << dominant_bottleneck.first << ","
+                  << dominant_bottleneck.second << ","
+                  << MeanResultField(group, &QueryResult::bottleneck_cycles)
+                  << ","
+                  << MeanResultField(group, &QueryResult::bottleneck_fraction)
+                  << ","
+                  << MeanGraphField(group, &GraphSanity::duplicate_edge_count)
+                  << ","
+                  << MeanGraphField(group, &GraphSanity::duplicate_edge_ratio)
+                  << ","
+                  << MeanGraphField(group, &GraphSanity::unique_src_dst_count)
+                  << "," << MeanGraphField(group, &GraphSanity::in_degree_mean)
+                  << "," << MeanGraphField(group, &GraphSanity::in_degree_p50)
+                  << "," << MeanGraphField(group, &GraphSanity::in_degree_p95)
+                  << "," << MeanGraphField(group, &GraphSanity::in_degree_max)
+                  << "," << MeanGraphField(group, &GraphSanity::out_degree_mean)
+                  << "," << MeanGraphField(group, &GraphSanity::out_degree_p50)
+                  << "," << MeanGraphField(group, &GraphSanity::out_degree_p95)
+                  << "," << MeanGraphField(group, &GraphSanity::out_degree_max)
+                  << ","
+                  << MeanGraphField(group, &GraphSanity::dst_degree_hist_0)
+                  << ","
+                  << MeanGraphField(group, &GraphSanity::dst_degree_hist_1)
+                  << ","
+                  << MeanGraphField(group, &GraphSanity::dst_degree_hist_2_3)
+                  << ","
+                  << MeanGraphField(group, &GraphSanity::dst_degree_hist_4_7)
+                  << ","
+                  << MeanGraphField(group, &GraphSanity::dst_degree_hist_8_15)
+                  << ","
+                  << MeanGraphField(group, &GraphSanity::dst_degree_hist_16_31)
+                  << ","
+                  << MeanGraphField(group, &GraphSanity::dst_degree_hist_32_63)
+                  << ","
+                  << MeanGraphField(group,
+                                    &GraphSanity::dst_degree_hist_64_plus)
+                  << ","
+                  << MeanGraphField(group, &GraphSanity::unique_source_banks)
+                  << ","
+                  << MeanPlacementField(
+                         group,
+                         &PlacementValidation::mapping_difference_ratio_vs_hash)
+                  << ","
+                  << MeanPlacementField(group,
+                                        &PlacementValidation::edge_active_banks)
+                  << ","
+                  << MeanPlacementField(
+                         group,
+                         &PlacementValidation::edge_active_pseudo_channels)
+                  << ","
+                  << MeanPlacementField(
+                         group, &PlacementValidation::bank_edge_count_mean)
+                  << ","
+                  << MeanPlacementField(
+                         group, &PlacementValidation::bank_edge_count_p50)
+                  << ","
+                  << MeanPlacementField(
+                         group, &PlacementValidation::bank_edge_count_p95)
+                  << ","
+                  << MeanPlacementField(
+                         group, &PlacementValidation::bank_edge_count_max)
+                  << ","
+                  << MeanPlacementField(
+                         group, &PlacementValidation::pc_edge_count_mean)
+                  << ","
+                  << MeanPlacementField(group,
+                                        &PlacementValidation::pc_edge_count_p50)
+                  << ","
+                  << MeanPlacementField(group,
+                                        &PlacementValidation::pc_edge_count_p95)
+                  << ","
+                  << MeanPlacementField(group,
+                                        &PlacementValidation::pc_edge_count_max)
+                  << ","
+                  << MeanPlacementField(
+                         group, &PlacementValidation::sharded_destination_count)
+                  << ","
+                  << MeanPlacementField(
+                         group, &PlacementValidation::total_destination_shards)
+                  << ","
+                  << MeanPlacementField(
+                         group,
+                         &PlacementValidation::average_shards_per_destination)
+                  << ","
+                  << MeanPlacementField(
+                         group,
+                         &PlacementValidation::max_shards_per_destination)
+                  << "," << MeanResultField(group, &QueryResult::compute_cycles)
+                  << ","
+                  << MeanResultField(group, &QueryResult::communication_cycles)
+                  << ","
+                  << MeanResultField(group, &QueryResult::q_broadcast_cycles)
+                  << ","
+                  << MeanResultField(
+                         group, &QueryResult::bank_to_pc_communication_cycles)
+                  << ","
+                  << MeanResultField(
+                         group, &QueryResult::pc_to_global_communication_cycles)
+                  << ","
+                  << MeanResultField(
+                         group,
+                         &QueryResult::global_to_npu_communication_cycles)
+                  << ","
+                  << MeanResultField(group, &QueryResult::critical_path_cycles)
+                  << ","
+                  << MeanResultField(group,
+                                     &QueryResult::critical_path_latency_ns)
+                  << ","
+                  << MeanResultField(group,
+                                     &QueryResult::traffic_stall_fraction)
+                  << ","
+                  << MeanResultField(
+                         group, &QueryResult::q_broadcast_critical_bank_bytes)
+                  << ","
+                  << MeanResultField(group,
+                                     &QueryResult::bank_to_pc_total_bytes)
+                  << ","
+                  << MeanResultField(
+                         group, &QueryResult::bank_to_pc_critical_bank_bytes)
+                  << ","
+                  << MeanResultField(group,
+                                     &QueryResult::bank_to_pc_critical_pc_bytes)
+                  << ","
+                  << MeanResultField(group,
+                                     &QueryResult::pc_to_global_total_bytes)
+                  << ","
+                  << MeanResultField(
+                         group, &QueryResult::pc_to_global_critical_pc_bytes)
+                  << ","
+                  << MeanResultField(group, &QueryResult::global_to_npu_bytes)
+                  << ","
+                  << MeanResultField(group,
+                                     &QueryResult::pc_reducer_input_groups)
+                  << ","
+                  << MeanResultField(group,
+                                     &QueryResult::pc_reducer_output_groups)
+                  << ","
+                  << MeanResultField(group,
+                                     &QueryResult::global_reducer_input_groups)
+                  << ","
+                  << MeanResultField(group,
+                                     &QueryResult::global_reducer_output_groups)
+                  << "\n";
             }
           }
-          if (group.empty()) {
-            continue;
-          }
-          std::vector<double> latency;
-          std::vector<double> selected;
-          std::vector<double> q_broadcast;
-          std::vector<double> score_traffic;
-          std::vector<double> p_return;
-          std::vector<double> message_reduce;
-          std::vector<double> local_buffer;
-          std::vector<double> pc_buffer;
-          std::vector<double> active_banks;
-          std::vector<double> active_pcs;
-          std::vector<double> pe_util;
-          std::vector<double> reducer_util;
-          std::vector<double> bank_imbalance;
-          std::vector<double> pc_imbalance;
-          std::vector<double> local_reduction;
-          std::vector<double> pc_reduction;
-          std::vector<double> avg_edges;
-          std::vector<double> p95_edges;
-          std::vector<double> max_edges;
-          std::vector<double> traffic_before;
-          std::vector<double> traffic_after;
-          for (const auto* r : group) {
-            latency.push_back(r->latency_ns);
-            selected.push_back(r->selected_kv_count);
-            q_broadcast.push_back(r->q_broadcast_bytes);
-            score_traffic.push_back(r->score_traffic_bytes);
-            p_return.push_back(r->p_return_traffic_bytes);
-            message_reduce.push_back(r->message_reduce_traffic_bytes);
-            local_buffer.push_back(r->local_combine_buffer_max_bytes);
-            pc_buffer.push_back(r->pc_reducer_buffer_max_bytes);
-            active_banks.push_back(r->active_banks);
-            active_pcs.push_back(r->active_pseudo_channels);
-            pe_util.push_back(r->near_bank_pe_utilization);
-            reducer_util.push_back(r->reducer_utilization);
-            bank_imbalance.push_back(r->diagnosis.bank_imbalance);
-            pc_imbalance.push_back(r->diagnosis.pseudo_channel_imbalance);
-            local_reduction.push_back(
-                r->diagnosis.local_combine_reduction_ratio);
-            pc_reduction.push_back(r->diagnosis.pc_reduction_ratio);
-            avg_edges.push_back(r->diagnosis.avg_edges_per_bank_dst);
-            p95_edges.push_back(r->diagnosis.p95_edges_per_bank_dst);
-            max_edges.push_back(r->diagnosis.max_edges_per_bank_dst);
-            traffic_before.push_back(
-                r->diagnosis.message_traffic_before_local_combine);
-            traffic_after.push_back(
-                r->diagnosis.message_traffic_after_local_combine);
-          }
-          const auto dominant_bottleneck = DominantBottleneck(group);
-          const auto dominant_cached_kv_bank = DominantResultIntField(
-              group, &QueryResult::cached_kv_bottleneck_bank);
-          csv << workload.name << "," << placement << "," << baseline << ","
-              << tile << "," << group.size() << "," << Mean(latency) << ","
-              << Percentile(latency, 0.50) << ","
-              << Percentile(latency, 0.95) << "," << Mean(selected) << ","
-              << MeanKVPlacementField(
-                     group, &KVPlacementDiagnosis::active_banks)
-              << ","
-              << MeanKVPlacementField(
-                     group, &KVPlacementDiagnosis::items_per_bank_mean)
-              << ","
-              << MeanKVPlacementField(
-                     group, &KVPlacementDiagnosis::items_per_bank_p95)
-              << ","
-              << MeanKVPlacementField(
-                     group, &KVPlacementDiagnosis::items_per_bank_max)
-              << ","
-              << MeanKVPlacementField(
-                     group, &KVPlacementDiagnosis::bank_imbalance)
-              << ","
-              << MeanKVPlacementField(
-                     group, &KVPlacementDiagnosis::bank_collision_ratio)
-              << "," << dominant_cached_kv_bank.first << ","
-              << dominant_cached_kv_bank.second << ","
-              << Mean(q_broadcast) << "," << Mean(score_traffic) << ","
-              << Mean(p_return) << "," << Mean(message_reduce) << ","
-              << Mean(local_buffer) << "," << Mean(pc_buffer) << ","
-              << Mean(active_banks) << "," << Mean(active_pcs) << ","
-              << Mean(pe_util) << "," << Mean(reducer_util) << ","
-              << Mean(bank_imbalance) << "," << Mean(pc_imbalance) << ","
-              << Mean(local_reduction) << "," << Mean(pc_reduction) << ","
-              << Mean(avg_edges) << "," << Mean(p95_edges) << ","
-              << Mean(max_edges) << "," << Mean(traffic_before) << ","
-              << Mean(traffic_after) << ","
-              << MeanResultField(group, &QueryResult::gnn_score_cycles) << ","
-              << MeanResultField(group, &QueryResult::gnn_message_cycles)
-              << ","
-              << MeanResultField(group, &QueryResult::cached_kv_cycles) << ","
-              << MeanResultField(group, &QueryResult::reducer_cycles) << ","
-              << MeanResultField(group, &QueryResult::scheduling_cycles) << ","
-              << MeanResultField(group, &QueryResult::q8k8_vdot_cycles) << ","
-              << MeanResultField(group, &QueryResult::gnn_score_scale_cycles)
-              << ","
-              << MeanResultField(group, &QueryResult::p8v8_vmul_cycles) << ","
-              << MeanResultField(group, &QueryResult::gnn_value_scale_cycles)
-              << ","
-              << MeanResultField(group, &QueryResult::local_vadd_cycles) << ","
-              << MeanResultField(group, &QueryResult::q8k2_lut_cycles) << ","
-              << MeanResultField(group, &QueryResult::p8v2_lut_cycles) << ","
-              << MeanResultField(group, &QueryResult::cached_kv_scale_cycles)
-              << ","
-              << MeanResultField(group, &QueryResult::pc_reduce_cycles) << ","
-              << MeanResultField(group, &QueryResult::global_reduce_cycles)
-              << ","
-              << MeanResultField(group, &QueryResult::h100_cache_read_cycles)
-              << ","
-              << MeanResultField(group, &QueryResult::h100_int2_unpack_cycles)
-              << ","
-              << MeanResultField(group,
-                                 &QueryResult::h100_scale_dequant_cycles)
-              << ","
-              << MeanResultField(
-                     group, &QueryResult::h100_layout_conversion_cycles)
-              << ","
-              << MeanResultField(
-                     group,
-                     &QueryResult::h100_irregular_gather_penalty_cycles)
-              << ","
-              << MeanResultField(
-                     group, &QueryResult::h100_small_batch_penalty_cycles)
-              << "," << dominant_bottleneck.first << ","
-              << dominant_bottleneck.second << ","
-              << MeanResultField(group, &QueryResult::bottleneck_cycles) << ","
-              << MeanResultField(group, &QueryResult::bottleneck_fraction)
-              << ","
-              << MeanGraphField(group, &GraphSanity::duplicate_edge_count)
-              << ","
-              << MeanGraphField(group, &GraphSanity::duplicate_edge_ratio)
-              << ","
-              << MeanGraphField(group, &GraphSanity::unique_src_dst_count)
-              << "," << MeanGraphField(group, &GraphSanity::in_degree_mean)
-              << "," << MeanGraphField(group, &GraphSanity::in_degree_p50)
-              << "," << MeanGraphField(group, &GraphSanity::in_degree_p95)
-              << "," << MeanGraphField(group, &GraphSanity::in_degree_max)
-              << "," << MeanGraphField(group, &GraphSanity::out_degree_mean)
-              << "," << MeanGraphField(group, &GraphSanity::out_degree_p50)
-              << "," << MeanGraphField(group, &GraphSanity::out_degree_p95)
-              << "," << MeanGraphField(group, &GraphSanity::out_degree_max)
-              << "," << MeanGraphField(group, &GraphSanity::dst_degree_hist_0)
-              << "," << MeanGraphField(group, &GraphSanity::dst_degree_hist_1)
-              << ","
-              << MeanGraphField(group, &GraphSanity::dst_degree_hist_2_3)
-              << ","
-              << MeanGraphField(group, &GraphSanity::dst_degree_hist_4_7)
-              << ","
-              << MeanGraphField(group, &GraphSanity::dst_degree_hist_8_15)
-              << ","
-              << MeanGraphField(group, &GraphSanity::dst_degree_hist_16_31)
-              << ","
-              << MeanGraphField(group, &GraphSanity::dst_degree_hist_32_63)
-              << ","
-              << MeanGraphField(group, &GraphSanity::dst_degree_hist_64_plus)
-              << ","
-              << MeanGraphField(group, &GraphSanity::unique_source_banks)
-              << ","
-              << MeanPlacementField(
-                     group,
-                     &PlacementValidation::mapping_difference_ratio_vs_hash)
-              << ","
-              << MeanPlacementField(group,
-                                    &PlacementValidation::edge_active_banks)
-              << ","
-              << MeanPlacementField(
-                     group, &PlacementValidation::edge_active_pseudo_channels)
-              << ","
-              << MeanPlacementField(group,
-                                    &PlacementValidation::bank_edge_count_mean)
-              << ","
-              << MeanPlacementField(group,
-                                    &PlacementValidation::bank_edge_count_p50)
-              << ","
-              << MeanPlacementField(group,
-                                    &PlacementValidation::bank_edge_count_p95)
-              << ","
-              << MeanPlacementField(group,
-                                    &PlacementValidation::bank_edge_count_max)
-              << ","
-              << MeanPlacementField(group,
-                                    &PlacementValidation::pc_edge_count_mean)
-              << ","
-              << MeanPlacementField(group,
-                                    &PlacementValidation::pc_edge_count_p50)
-              << ","
-              << MeanPlacementField(group,
-                                    &PlacementValidation::pc_edge_count_p95)
-              << ","
-              << MeanPlacementField(group,
-                                    &PlacementValidation::pc_edge_count_max)
-              << ","
-              << MeanPlacementField(
-                     group, &PlacementValidation::sharded_destination_count)
-              << ","
-              << MeanPlacementField(group,
-                                    &PlacementValidation::total_destination_shards)
-              << ","
-              << MeanPlacementField(
-                     group,
-                     &PlacementValidation::average_shards_per_destination)
-              << ","
-              << MeanPlacementField(
-                     group, &PlacementValidation::max_shards_per_destination)
-              << "," << MeanResultField(group, &QueryResult::compute_cycles)
-              << ","
-              << MeanResultField(group, &QueryResult::communication_cycles)
-              << ","
-              << MeanResultField(group, &QueryResult::q_broadcast_cycles)
-              << ","
-              << MeanResultField(
-                     group, &QueryResult::bank_to_pc_communication_cycles)
-              << ","
-              << MeanResultField(
-                     group, &QueryResult::pc_to_global_communication_cycles)
-              << ","
-              << MeanResultField(
-                     group, &QueryResult::global_to_npu_communication_cycles)
-              << ","
-              << MeanResultField(group, &QueryResult::critical_path_cycles)
-              << ","
-              << MeanResultField(group,
-                                 &QueryResult::critical_path_latency_ns)
-              << ","
-              << MeanResultField(group,
-                                 &QueryResult::traffic_stall_fraction)
-              << ","
-              << MeanResultField(
-                     group, &QueryResult::q_broadcast_critical_bank_bytes)
-              << ","
-              << MeanResultField(group,
-                                 &QueryResult::bank_to_pc_total_bytes)
-              << ","
-              << MeanResultField(
-                     group, &QueryResult::bank_to_pc_critical_bank_bytes)
-              << ","
-              << MeanResultField(
-                     group, &QueryResult::bank_to_pc_critical_pc_bytes)
-              << ","
-              << MeanResultField(group,
-                                 &QueryResult::pc_to_global_total_bytes)
-              << ","
-              << MeanResultField(
-                     group, &QueryResult::pc_to_global_critical_pc_bytes)
-              << ","
-              << MeanResultField(group, &QueryResult::global_to_npu_bytes)
-              << ","
-              << MeanResultField(group,
-                                 &QueryResult::pc_reducer_input_groups)
-              << ","
-              << MeanResultField(group,
-                                 &QueryResult::pc_reducer_output_groups)
-              << ","
-              << MeanResultField(group,
-                                 &QueryResult::global_reducer_input_groups)
-              << ","
-              << MeanResultField(group,
-                                 &QueryResult::global_reducer_output_groups)
-              << "\n";
         }
       }
     }
@@ -2354,46 +3048,65 @@ void WriteAggregateCSV(const std::string& path,
 
 void PrintSummary(const SimulationConfig& config,
                   const std::vector<QueryResult>& results) {
-  std::cout << "Analytical PIM Patch 4 communication-aware run\n";
+  std::cout << "Analytical PIM Patch 5 trace-driven run\n";
+  const size_t result_multiplier =
+      config.placements.size() * config.kv_placements.size() *
+      config.baselines.size() * config.tile.memory_token_tiles.size();
+  const size_t query_count =
+      result_multiplier == 0 ? 0 : results.size() / result_multiplier;
   std::cout << "workloads=" << config.suite.workloads.size()
-            << ", placements=" << config.placements.size()
+            << ", graph_placements=" << config.placements.size()
+            << ", kv_placements=" << config.kv_placements.size()
             << ", baselines=" << config.baselines.size()
-            << ", queries_per_workload="
-            << config.suite.num_queries_per_workload << "\n";
+            << ", queries=" << query_count << "\n";
+  const std::vector<std::string> splits =
+      config.workload_mode == "trace" ? config.trace.loader.splits
+                                      : std::vector<std::string>{"synthetic"};
   for (const auto& workload : config.suite.workloads) {
-    for (const auto& placement : config.placements) {
-      std::vector<double> local_reduction;
-      std::vector<double> latency;
-      std::vector<double> compute;
-      std::vector<double> communication;
-      std::vector<double> reducer;
-      std::vector<double> traffic_stall;
-      std::vector<const QueryResult*> group;
-      for (const auto& r : results) {
-        if (r.workload == workload.name && r.placement == placement &&
-            r.baseline == kPIMLocalCombine && r.memory_token_tile == 4) {
-          local_reduction.push_back(
-              r.diagnosis.local_combine_reduction_ratio);
-          latency.push_back(r.latency_ns);
-          compute.push_back(r.compute_cycles);
-          communication.push_back(r.communication_cycles);
-          reducer.push_back(r.reducer_cycles);
-          traffic_stall.push_back(r.traffic_stall_fraction);
-          group.push_back(&r);
+    for (const auto& split : splits) {
+      for (const auto& placement : config.placements) {
+        for (const auto& kv_placement : config.kv_placements) {
+          std::vector<double> local_reduction;
+          std::vector<double> latency;
+          std::vector<double> compute;
+          std::vector<double> communication;
+          std::vector<double> reducer;
+          std::vector<double> traffic_stall;
+          std::vector<double> loaded_bytes;
+          std::vector<const QueryResult*> group;
+          for (const auto& r : results) {
+            if (r.workload == workload.name && r.split == split &&
+                r.graph_compute_placement == placement &&
+                r.kv_storage_placement == kv_placement &&
+                r.baseline == kPIMLocalCombine && r.memory_token_tile == 4) {
+              local_reduction.push_back(
+                  r.diagnosis.local_combine_reduction_ratio);
+              latency.push_back(r.latency_ns);
+              compute.push_back(r.compute_cycles);
+              communication.push_back(r.communication_cycles);
+              reducer.push_back(r.reducer_cycles);
+              traffic_stall.push_back(r.traffic_stall_fraction);
+              loaded_bytes.push_back(r.runtime_loaded_cache_bytes);
+              group.push_back(&r);
+            }
+          }
+          if (!latency.empty()) {
+            std::cout << workload.name << "/" << split << "/" << placement
+                      << "/kv=" << kv_placement
+                      << " local-combine T=4 mean_latency_ns=" << std::fixed
+                      << std::setprecision(2) << Mean(latency)
+                      << " compute_cycles=" << Mean(compute)
+                      << " communication_cycles=" << Mean(communication)
+                      << " reducer_cycles=" << Mean(reducer)
+                      << " runtime_loaded_bytes=" << Mean(loaded_bytes)
+                      << " traffic_stall=" << std::setprecision(4)
+                      << Mean(traffic_stall)
+                      << " mean_local_reduction=" << std::setprecision(4)
+                      << Mean(local_reduction)
+                      << " bottleneck=" << DominantBottleneck(group).first
+                      << "\n";
+          }
         }
-      }
-      if (!latency.empty()) {
-        std::cout << workload.name << "/" << placement
-                  << " local-combine T=4 mean_latency_ns=" << std::fixed
-                  << std::setprecision(2) << Mean(latency)
-                  << " compute_cycles=" << Mean(compute)
-                  << " communication_cycles=" << Mean(communication)
-                  << " reducer_cycles=" << Mean(reducer)
-                  << " traffic_stall=" << std::setprecision(4)
-                  << Mean(traffic_stall)
-                  << " mean_local_reduction=" << std::setprecision(4)
-                  << Mean(local_reduction)
-                  << " bottleneck=" << DominantBottleneck(group).first << "\n";
       }
     }
   }
@@ -2410,15 +3123,19 @@ int RunAnalyticalPIM(const std::string& config_path) {
     std::vector<QuerySample> base_queries = GenerateQueries(config);
     std::vector<QueryResult> results;
     for (const auto& base_query : base_queries) {
-      for (const auto& placement : config.placements) {
-        QuerySample placed_query = ApplyPlacement(base_query, config, placement);
-        for (const auto& baseline : config.baselines) {
-          for (int tile : config.tile.memory_token_tiles) {
-            if (tile <= 0) {
-              throw std::runtime_error("memory_token_tiles must be positive");
+      for (const auto& graph_placement : config.placements) {
+        QuerySample placed_query =
+            ApplyPlacement(base_query, config, graph_placement);
+        for (const auto& kv_placement : config.kv_placements) {
+          for (const auto& baseline : config.baselines) {
+            for (int tile : config.tile.memory_token_tiles) {
+              if (tile <= 0) {
+                throw std::runtime_error("memory_token_tiles must be positive");
+              }
+              results.push_back(SimulateQuery(config, placed_query,
+                                              graph_placement, kv_placement,
+                                              baseline, tile));
             }
-            results.push_back(
-                SimulateQuery(config, placed_query, placement, baseline, tile));
           }
         }
       }
