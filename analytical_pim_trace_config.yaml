@@ -61,6 +61,11 @@ tile:
   head_tile: 1
   memory_token_tiles: [1, 4, 8]
 
+local_buffer:
+  resident_head_tiles: 1
+  concurrent_destinations_per_bank: 1
+  capacity_bytes_per_bank: 4096
+
 workload_suite:
   seed: 1
 

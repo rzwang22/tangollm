@@ -337,6 +337,40 @@ The per-query and aggregate CSV files include:
 These fields are intended to diagnose whether a placement creates enough
 same-bank and same-pseudo-channel destination reuse for local combine to help.
 
+## Near-Bank Local Buffer
+
+The local-combine accumulator is modeled as a per-bank near-bank SRAM or
+register-file resource. Its residency is configured independently from edge
+multiplicity:
+
+```yaml
+local_buffer:
+  resident_head_tiles: 1
+  concurrent_destinations_per_bank: 1
+  capacity_bytes_per_bank: 4096
+```
+
+For one resident destination, the required bytes are:
+
+```text
+bytes_per_group = memory_token_tile * head_tile
+                * channel_group * partial_message_bytes
+
+bytes_per_head_tile = groups_per_head * bytes_per_group
+
+bytes_per_destination = resident_head_tiles * bytes_per_head_tile
+
+required_bytes_per_bank = min(configured_concurrent_destinations,
+                              active_destinations_on_busiest_bank)
+                        * bytes_per_destination
+```
+
+Edges with the same `(bank,destination)` stream through VADD into the same
+accumulator. Edge count therefore does not multiply SRAM capacity. The output
+fields report per-group, per-head-tile, per-destination, required, configured,
+overflow, and utilization values. Capacity overflow is diagnostic in this
+patch; it does not yet add spill traffic or serialization latency.
+
 ## Bottleneck Breakdown
 
 The existing stage totals are retained:
@@ -433,10 +467,12 @@ The per-query CSV has:
 Patch 4 with selected-KV placement diagnosis emits 127 per-query columns and
 116 aggregate columns.
 
-Patch 5 emits 171 per-query columns and 156 aggregate columns. The additional
+Patch 5 with the corrected local-buffer model emits 181 per-query columns and
+166 aggregate columns. The additional
 fields carry trace identity, split/evaluation role, target/question and cache
 inventory counts, independent graph/KV placement, native cache bytes including
-edge-cache bytes, token counts, QK/PV work, and NOG shapes.
+edge-cache bytes, token counts, QK/PV work, NOG shapes, and per-bank local
+buffer residency/capacity diagnostics.
 
 The formal config produces:
 
@@ -445,7 +481,7 @@ The formal config produces:
              * 2 PIM baselines * 3 tile sizes = 48000 per-query rows
 
 5 workloads * 2 splits * 4 graph placements * 2 KV placements
-            * 2 PIM baselines * 3 tile sizes = 240 aggregate rows
+            * 2 PIM baselines * 3 tile sizes = 480 aggregate rows
 ```
 
 The local fixture under `tests/fixtures/gofa_trace_v1` contains one validation

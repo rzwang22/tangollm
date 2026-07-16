@@ -96,6 +96,12 @@ struct TileConfig {
   std::vector<int> memory_token_tiles{1, 4, 8};
 };
 
+struct LocalBufferConfig {
+  int resident_head_tiles = 1;
+  int concurrent_destinations_per_bank = 1;
+  double capacity_bytes_per_bank = 4096.0;
+};
+
 struct ModelConfig {
   int memory_tokens = 128;
   int hidden_dim = 4096;
@@ -292,6 +298,7 @@ struct SimulationConfig {
   PEConfig pe;
   PrecisionConfig precision;
   TileConfig tile;
+  LocalBufferConfig local_buffer;
   ModelConfig model;
   WorkloadSuiteConfig suite;
   TraceWorkloadConfig trace;
@@ -394,6 +401,16 @@ struct QueryResult {
   double p_return_traffic_bytes = 0.0;
   double message_reduce_traffic_bytes = 0.0;
   double local_combine_buffer_max_bytes = 0.0;
+  double local_buffer_bytes_per_group = 0.0;
+  double local_buffer_bytes_per_head_tile = 0.0;
+  double local_buffer_bytes_per_destination = 0.0;
+  int local_buffer_resident_head_tiles = 0;
+  int local_buffer_concurrent_destinations = 0;
+  int local_buffer_active_destinations_max = 0;
+  double local_buffer_capacity_bytes_per_bank = 0.0;
+  double local_buffer_overflow_bytes_per_bank = 0.0;
+  double local_buffer_capacity_utilization = 0.0;
+  int local_buffer_capacity_exceeded = 0;
   double pc_reducer_buffer_max_bytes = 0.0;
   double gnn_score_cycles = 0.0;
   double gnn_message_cycles = 0.0;
@@ -619,6 +636,14 @@ SimulationConfig LoadConfig(const std::string& config_path) {
     config.tile.memory_token_tiles = {1, 4, 8};
   }
 
+  const YAML::Node local_buffer = root["local_buffer"];
+  config.local_buffer.resident_head_tiles =
+      ReadScalar<int>(local_buffer, "resident_head_tiles", 1);
+  config.local_buffer.concurrent_destinations_per_bank =
+      ReadScalar<int>(local_buffer, "concurrent_destinations_per_bank", 1);
+  config.local_buffer.capacity_bytes_per_bank =
+      ReadScalar<double>(local_buffer, "capacity_bytes_per_bank", 4096.0);
+
   const YAML::Node model = root["model"];
   config.model.memory_tokens = ReadScalar<int>(model, "memory_tokens", 128);
   config.model.hidden_dim = ReadScalar<int>(model, "hidden_dim", 4096);
@@ -806,6 +831,10 @@ SimulationConfig LoadConfig(const std::string& config_path) {
        config.workload_mode != "trace") ||
       config.model.memory_tokens <= 0 || config.model.gnn_heads <= 0 ||
       config.model.head_dim <= 0 || config.tile.channel_group <= 0 ||
+      config.tile.head_tile <= 0 ||
+      config.local_buffer.resident_head_tiles <= 0 ||
+      config.local_buffer.concurrent_destinations_per_bank <= 0 ||
+      config.local_buffer.capacity_bytes_per_bank <= 0.0 ||
       (config.workload_mode == "synthetic" &&
        (config.suite.full_graph_nodes <= 0 ||
         config.suite.num_queries_per_workload <= 0)) ||
@@ -891,6 +920,12 @@ void PrintSanityCheck(const SimulationConfig& config) {
             << ScaleMetadataBytesPerItem(config.model)
             << ", total_kv_bytes_per_item="
             << TextKVBytesPerItem(config.model) << "\n";
+  std::cout << "local_buffer: resident_head_tiles="
+            << config.local_buffer.resident_head_tiles
+            << ", concurrent_destinations_per_bank="
+            << config.local_buffer.concurrent_destinations_per_bank
+            << ", capacity_bytes_per_bank="
+            << config.local_buffer.capacity_bytes_per_bank << "\n";
   std::cout << "hybrid_placement: hot_dst_degree_threshold="
             << config.hybrid.hot_dst_degree_threshold
             << ", target_edges_per_bank="
@@ -2073,9 +2108,6 @@ QueryResult SimulateQuery(const SimulationConfig& config,
   const double buffer_per_active_group =
       1.0 * memory_token_tile * config.tile.head_tile *
       config.tile.channel_group * config.precision.partial_msg_bytes;
-  result.local_combine_buffer_max_bytes =
-      result.diagnosis.max_edges_per_bank_dst * config.model.gnn_heads *
-      groups_per_head * buffer_per_active_group;
   result.pc_reducer_buffer_max_bytes =
       result.diagnosis.pc_group_count_after_pc_reduce /
       std::max(1, config.model.memory_tokens) /
@@ -2098,6 +2130,41 @@ QueryResult SimulateQuery(const SimulationConfig& config,
     destinations_by_bank[edge.bank].insert(edge.dst);
     destinations_by_pc[edge.pseudo_channel].insert(edge.dst);
     global_destinations.insert(edge.dst);
+  }
+
+  const int total_head_tiles =
+      (config.model.gnn_heads + config.tile.head_tile - 1) /
+      config.tile.head_tile;
+  result.local_buffer_bytes_per_group = buffer_per_active_group;
+  result.local_buffer_resident_head_tiles =
+      std::min(config.local_buffer.resident_head_tiles, total_head_tiles);
+  result.local_buffer_bytes_per_head_tile =
+      groups_per_head * buffer_per_active_group;
+  result.local_buffer_bytes_per_destination =
+      result.local_buffer_resident_head_tiles *
+      result.local_buffer_bytes_per_head_tile;
+  for (const auto& destinations : destinations_by_bank) {
+    result.local_buffer_active_destinations_max =
+        std::max(result.local_buffer_active_destinations_max,
+                 static_cast<int>(destinations.size()));
+  }
+  result.local_buffer_capacity_bytes_per_bank =
+      config.local_buffer.capacity_bytes_per_bank;
+  if (baseline == kPIMLocalCombine) {
+    result.local_buffer_concurrent_destinations =
+        std::min(config.local_buffer.concurrent_destinations_per_bank,
+                 result.local_buffer_active_destinations_max);
+    result.local_combine_buffer_max_bytes =
+        result.local_buffer_concurrent_destinations *
+        result.local_buffer_bytes_per_destination;
+    result.local_buffer_overflow_bytes_per_bank =
+        std::max(0.0, result.local_combine_buffer_max_bytes -
+                          result.local_buffer_capacity_bytes_per_bank);
+    result.local_buffer_capacity_utilization =
+        result.local_combine_buffer_max_bytes /
+        result.local_buffer_capacity_bytes_per_bank;
+    result.local_buffer_capacity_exceeded =
+        result.local_buffer_overflow_bytes_per_bank > 0.0 ? 1 : 0;
   }
 
   std::vector<double> bank_to_pc_bytes_by_bank(
@@ -2338,6 +2405,15 @@ void WritePerQueryCSV(const std::string& path,
          "selected_kv_bank_imbalance,selected_kv_bank_collision_ratio,"
          "q_broadcast_bytes,score_traffic_bytes,p_return_traffic_bytes,"
          "message_reduce_traffic_bytes,local_combine_buffer_max_bytes,"
+         "local_buffer_bytes_per_group,local_buffer_bytes_per_head_tile,"
+         "local_buffer_bytes_per_destination,"
+         "local_buffer_resident_head_tiles,"
+         "local_buffer_concurrent_destinations,"
+         "local_buffer_active_destinations_max,"
+         "local_buffer_capacity_bytes_per_bank,"
+         "local_buffer_overflow_bytes_per_bank,"
+         "local_buffer_capacity_utilization,"
+         "local_buffer_capacity_exceeded,"
          "pc_reducer_buffer_max_bytes,gnn_score_cycles,gnn_message_cycles,"
          "cached_kv_cycles,reducer_cycles,scheduling_cycles,total_cycles,"
          "latency_ns,near_bank_pe_utilization,reducer_utilization,"
@@ -2425,6 +2501,16 @@ void WritePerQueryCSV(const std::string& path,
         << r.q_broadcast_bytes << "," << r.score_traffic_bytes << ","
         << r.p_return_traffic_bytes << "," << r.message_reduce_traffic_bytes
         << "," << r.local_combine_buffer_max_bytes << ","
+        << r.local_buffer_bytes_per_group << ","
+        << r.local_buffer_bytes_per_head_tile << ","
+        << r.local_buffer_bytes_per_destination << ","
+        << r.local_buffer_resident_head_tiles << ","
+        << r.local_buffer_concurrent_destinations << ","
+        << r.local_buffer_active_destinations_max << ","
+        << r.local_buffer_capacity_bytes_per_bank << ","
+        << r.local_buffer_overflow_bytes_per_bank << ","
+        << r.local_buffer_capacity_utilization << ","
+        << r.local_buffer_capacity_exceeded << ","
         << r.pc_reducer_buffer_max_bytes << "," << r.gnn_score_cycles << ","
         << r.gnn_message_cycles << "," << r.cached_kv_cycles << ","
         << r.reducer_cycles << "," << r.scheduling_cycles << ","
@@ -2607,6 +2693,15 @@ void WriteAggregateCSV(const std::string& path,
          "cached_kv_bottleneck_bank_query_fraction,"
          "q_broadcast_bytes,score_traffic_bytes,p_return_traffic_bytes,"
          "message_reduce_traffic_bytes,local_combine_buffer_max_bytes,"
+         "local_buffer_bytes_per_group,local_buffer_bytes_per_head_tile,"
+         "local_buffer_bytes_per_destination,"
+         "local_buffer_resident_head_tiles,"
+         "local_buffer_concurrent_destinations,"
+         "local_buffer_active_destinations_max,"
+         "local_buffer_capacity_bytes_per_bank,"
+         "local_buffer_overflow_bytes_per_bank,"
+         "local_buffer_capacity_utilization,"
+         "local_buffer_capacity_exceeded_query_fraction,"
          "pc_reducer_buffer_max_bytes,active_banks,active_pseudo_channels,"
          "near_bank_pe_utilization,reducer_utilization,bank_imbalance,"
          "pseudo_channel_imbalance,local_combine_reduction_ratio,"
@@ -2838,7 +2933,41 @@ void WriteAggregateCSV(const std::string& path,
                   << dominant_cached_kv_bank.second << "," << Mean(q_broadcast)
                   << "," << Mean(score_traffic) << "," << Mean(p_return) << ","
                   << Mean(message_reduce) << "," << Mean(local_buffer) << ","
-                  << Mean(pc_buffer) << "," << Mean(active_banks) << ","
+                  << MeanResultField(group,
+                                     &QueryResult::local_buffer_bytes_per_group)
+                  << ","
+                  << MeanResultField(
+                         group, &QueryResult::local_buffer_bytes_per_head_tile)
+                  << ","
+                  << MeanResultField(
+                         group,
+                         &QueryResult::local_buffer_bytes_per_destination)
+                  << ","
+                  << MeanResultIntField(
+                         group, &QueryResult::local_buffer_resident_head_tiles)
+                  << ","
+                  << MeanResultIntField(
+                         group,
+                         &QueryResult::local_buffer_concurrent_destinations)
+                  << ","
+                  << MeanResultIntField(
+                         group,
+                         &QueryResult::local_buffer_active_destinations_max)
+                  << ","
+                  << MeanResultField(
+                         group,
+                         &QueryResult::local_buffer_capacity_bytes_per_bank)
+                  << ","
+                  << MeanResultField(
+                         group,
+                         &QueryResult::local_buffer_overflow_bytes_per_bank)
+                  << ","
+                  << MeanResultField(
+                         group, &QueryResult::local_buffer_capacity_utilization)
+                  << ","
+                  << MeanResultIntField(
+                         group, &QueryResult::local_buffer_capacity_exceeded)
+                  << "," << Mean(pc_buffer) << "," << Mean(active_banks) << ","
                   << Mean(active_pcs) << "," << Mean(pe_util) << ","
                   << Mean(reducer_util) << "," << Mean(bank_imbalance) << ","
                   << Mean(pc_imbalance) << "," << Mean(local_reduction) << ","

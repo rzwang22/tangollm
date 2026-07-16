@@ -118,6 +118,16 @@ def check_valid_run(binary: Path) -> None:
             "runtime_pv_output_elements",
             "nog_runtime_qk_elements",
             "nog_runtime_pv_output_elements",
+            "local_buffer_bytes_per_group",
+            "local_buffer_bytes_per_head_tile",
+            "local_buffer_bytes_per_destination",
+            "local_buffer_resident_head_tiles",
+            "local_buffer_concurrent_destinations",
+            "local_buffer_active_destinations_max",
+            "local_buffer_capacity_bytes_per_bank",
+            "local_buffer_overflow_bytes_per_bank",
+            "local_buffer_capacity_utilization",
+            "local_buffer_capacity_exceeded",
         }
         assert required_columns <= set(per_query[0])
 
@@ -151,6 +161,39 @@ def check_valid_run(binary: Path) -> None:
         assert_close(row["nog_runtime_qk_elements"], 3317760)
         assert_close(row["nog_runtime_pv_output_elements"], 3145728)
         assert float(row["selected_kv_bytes"]) != 786432
+
+        def local_buffer_row(tile: str, baseline: str) -> dict[str, str]:
+            return next(
+                row
+                for row in per_query
+                if row["split"] == "validation"
+                and row["graph_compute_placement"] == "hash"
+                and row["kv_storage_placement"] == "balanced"
+                and row["baseline"] == baseline
+                and row["memory_token_tile"] == tile
+            )
+
+        local_t1 = local_buffer_row("1", "pim_selective_kv_local_combine")
+        local_t4 = local_buffer_row("4", "pim_selective_kv_local_combine")
+        no_local_t4 = local_buffer_row(
+            "4", "pim_selective_kv_no_local_combine"
+        )
+        assert_close(local_t1["local_buffer_bytes_per_group"], 32)
+        assert_close(local_t1["local_buffer_bytes_per_destination"], 256)
+        assert_close(local_t1["local_combine_buffer_max_bytes"], 256)
+        assert_close(local_t4["local_buffer_bytes_per_group"], 128)
+        assert_close(local_t4["local_buffer_bytes_per_head_tile"], 1024)
+        assert_close(local_t4["local_buffer_bytes_per_destination"], 1024)
+        assert local_t4["local_buffer_resident_head_tiles"] == "1"
+        assert local_t4["local_buffer_concurrent_destinations"] == "1"
+        assert local_t4["local_buffer_active_destinations_max"] == "1"
+        assert_close(local_t4["local_buffer_capacity_bytes_per_bank"], 4096)
+        assert_close(local_t4["local_combine_buffer_max_bytes"], 1024)
+        assert_close(local_t4["local_buffer_overflow_bytes_per_bank"], 0)
+        assert_close(local_t4["local_buffer_capacity_utilization"], 0.25)
+        assert local_t4["local_buffer_capacity_exceeded"] == "0"
+        assert_close(no_local_t4["local_combine_buffer_max_bytes"], 0)
+        assert no_local_t4["local_buffer_concurrent_destinations"] == "0"
 
         combinations = {
             (row["graph_compute_placement"], row["kv_storage_placement"])
@@ -207,6 +250,34 @@ def check_valid_run(binary: Path) -> None:
                     "mean_cached_kv_cycles"
                 ]
             ),
+        )
+
+        config.write_text(
+            config.read_text().replace(
+                "capacity_bytes_per_bank: 4096",
+                "capacity_bytes_per_bank: 512",
+            )
+        )
+        overflow_completed = run_simulator(binary, config)
+        assert overflow_completed.returncode == 0, overflow_completed.stdout
+        overflow_rows = load_rows(directory / "per_query.csv")
+        overflow_t4 = next(
+            row
+            for row in overflow_rows
+            if row["split"] == "validation"
+            and row["graph_compute_placement"] == "hash"
+            and row["kv_storage_placement"] == "balanced"
+            and row["baseline"] == "pim_selective_kv_local_combine"
+            and row["memory_token_tile"] == "4"
+        )
+        assert_close(overflow_t4["local_combine_buffer_max_bytes"], 1024)
+        assert_close(overflow_t4["local_buffer_capacity_bytes_per_bank"], 512)
+        assert_close(overflow_t4["local_buffer_overflow_bytes_per_bank"], 512)
+        assert_close(overflow_t4["local_buffer_capacity_utilization"], 2)
+        assert overflow_t4["local_buffer_capacity_exceeded"] == "1"
+        assert_close(
+            overflow_t4["critical_path_latency_ns"],
+            float(local_t4["critical_path_latency_ns"]),
         )
 
 
@@ -309,7 +380,7 @@ def main() -> None:
         raise SystemExit(f"Missing analytical_pim binary: {binary}")
     check_valid_run(binary)
     check_negative_cases(binary)
-    print("Patch 5 trace tests passed: valid=1, negative=6")
+    print("Patch 5 buffer tests passed: valid=2, negative=6")
 
 
 if __name__ == "__main__":
