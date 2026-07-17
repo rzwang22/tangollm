@@ -1,0 +1,123 @@
+workload:
+  mode: trace
+
+model:
+  memory_tokens: 128
+  hidden_dim: 4096
+  gnn_heads: 32
+  head_dim: 128
+  suffix_layers: 6
+  text_len: 256
+  kv_heads: 8
+  kv_bits: 2
+  include_scale_metadata: false
+  scale_group_channels: 16
+  scale_bytes: 2
+
+trace_workload:
+  root: /home/rzwang/data/GOFA/cache_data/gofa_cache_exp/canonical_seed1_h3_n10_s100/query_traces
+  splits: [validation, test]
+  simulation_splits: [validation]
+  expected_queries_per_split: 100
+  expected_batch_size: 1
+  expected_cache_mode: memory_kv
+  expected_selection_policy: target_1hop
+  expected_memory_bits: 4
+  expected_key_bits: 2
+  expected_value_bits: 2
+  expected_gnn_start_layer: 26
+  validate_summary: true
+  tasks:
+    - name: cora_node
+      directory: cora_node_formal_v1
+    - name: cora_link
+      directory: cora_link_formal_v1
+    - name: pubmed_node
+      directory: pubmed_node_formal_v1
+    - name: wikics
+      directory: wikics_formal_v1
+    - name: arxiv
+      directory: arxiv_formal_v1
+
+hbm3:
+  num_stacks: 1
+  channels_per_stack: 8
+  pseudo_channels_per_channel: 2
+  banks_per_pseudo_channel: 16
+  pe_per_bank: 1
+
+near_bank_pe:
+  q8k8_group_cycles: 1
+  p8v8_group_cycles: 1
+  q8k2_lut_group_cycles: 1
+  p8v2_lut_group_cycles: 1
+  vadd_group_cycles: 1
+  scale_group_cycles: 1
+  gnn_scale_group_cycles: 1
+  cached_kv_scale_group_cycles: 1
+  cached_kv_lut_scale_overlap: 0
+  softmax_group_cycles: 1
+  scheduling_overhead_per_tile_cycles: 16
+
+  # Uncalibrated placeholders. Patch 7A fits these from validation profiles.
+  h100_group_cycles: 1
+  h100_cache_bytes_per_cycle: 4096
+  h100_int2_unpack_group_cycles: 1
+  h100_scale_dequant_group_cycles: 1
+  h100_layout_conversion_group_cycles: 1
+  h100_irregular_gather_penalty: 1.25
+  h100_small_batch_efficiency: 0.5
+  h100_fixed_overhead_cycles: 0
+  clock_ns: 1.0
+
+tile:
+  channel_group: 16
+  head_tile: 1
+  memory_token_tiles: [4]
+
+local_buffer:
+  resident_head_tiles: 1
+  concurrent_destinations_per_bank: 1
+  capacity_bytes_per_bank: 4096
+
+workload_suite:
+  seed: 1
+
+hybrid_placement:
+  hot_dst_degree_threshold: 64
+  target_edges_per_bank: 32
+  max_banks_per_destination: 16
+  locality_weight: 0.25
+  bank_balance_weight: 1.0
+  pseudo_channel_balance_weight: 1.0
+
+communication:
+  q_broadcast_bandwidth_bytes_per_cycle_per_bank: 64
+  q_broadcast_startup_cycles: 16
+  bank_to_pc_bandwidth_bytes_per_cycle_per_bank: 32
+  bank_to_pc_startup_cycles: 16
+  pc_to_global_bandwidth_bytes_per_cycle_per_pc: 64
+  pc_to_global_startup_cycles: 32
+  global_to_npu_bandwidth_bytes_per_cycle: 256
+  global_to_npu_startup_cycles: 32
+
+reducer:
+  pc_lanes_per_pseudo_channel: 16
+  pc_throughput_groups_per_cycle_per_lane: 1
+  pc_input_bandwidth_bytes_per_cycle: 512
+  pc_concurrent_destination_groups: 64
+  global_units: 1
+  global_lanes_per_unit: 64
+  global_throughput_groups_per_cycle_per_lane: 1
+  global_input_bandwidth_bytes_per_cycle: 1024
+  global_concurrent_destination_groups: 256
+
+graph_compute_placement_sweep: [source_dst_locality]
+kv_storage_placement_sweep: [balanced]
+
+baselines:
+  - h100_realistic_cache_path
+
+output:
+  per_query_csv: ../data/patch7a/h100_features_per_query.csv
+  aggregate_csv: ../data/patch7a/h100_features_aggregate.csv

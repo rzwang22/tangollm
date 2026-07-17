@@ -84,8 +84,8 @@ def check_valid_run(binary: Path) -> None:
         aggregate = load_rows(directory / "aggregate.csv")
         assert len(per_query) == 32
         assert len(aggregate) == 32
-        assert len(per_query[0]) == 194
-        assert len(aggregate[0]) == 179
+        assert len(per_query[0]) == 198
+        assert len(aggregate[0]) == 183
         assert all(
             None not in row and all(value is not None for value in row.values())
             for row in per_query
@@ -155,6 +155,10 @@ def check_valid_run(binary: Path) -> None:
             "cached_kv_overlap_hidden_fraction",
             "cached_kv_pipeline_compute_fraction",
             "cached_kv_pipeline_critical_path_fraction",
+            "h100_fixed_overhead_cycles",
+            "h100_gnn_score_groups",
+            "h100_gnn_message_groups",
+            "h100_cached_kv_groups",
         }
         assert required_columns <= set(per_query[0])
 

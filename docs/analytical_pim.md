@@ -63,6 +63,73 @@ bottleneck. The `__all__` row computes exact percentiles over all 500 test
 queries rather than averaging per-workload percentiles. The report is a
 PIM-internal comparison and must not be presented as PIM/H100 speedup.
 
+## Patch 7A H100 Validation Calibration
+
+Patch 7A calibrates `h100_realistic_cache_path` from measured validation
+queries. It does not read test measurements, compare PIM against H100, select
+a PIM design, or report speedup. The frozen feature pass uses one graph
+placement, one KV placement, one tile size, and one H100 baseline:
+
+```text
+graph placement = source_dst_locality
+KV placement    = balanced
+tile            = 4
+baseline        = h100_realistic_cache_path
+split           = validation
+```
+
+Generate the strict profiling template from the build directory:
+
+```bash
+python3 ../tools/run_patch7a_h100_calibration.py \
+  --binary ./analytical_pim \
+  --config ./analytical_pim_patch7a_config.yaml \
+  --output-directory ../data/patch7a
+```
+
+The template preserves `trace_index.jsonl` order and contains one row per
+validation query. Profiling must fill every provenance and timing column. The
+required measurement method is `cuda_event_stage_additive_v1`, batch size is
+one, and the measured stages are:
+
+- GNN score, GNN message, and cached-KV arithmetic;
+- native INT2 K/V read, unpack, group scale/dequant, and layout conversion;
+- irregular gather and small-batch penalties;
+- fixed launch/synchronization/unattributed overhead.
+
+The H100 cache-read feature is trace-native `runtime_loaded_cache_bytes`, which
+includes the memory-state payload and selected K/V payload required by the
+query. `selected_kv_bytes` is retained as a validator/diagnostic field but is
+not substituted for total runtime-loaded traffic.
+
+All timings are nanoseconds averaged over the declared measured iterations.
+`measured_total_latency_ns` must equal the sum of the ten stage columns within
+the configured tolerance. CUDA work must be synchronized at each additive
+stage boundary; timings from overlapping whole-query kernels do not satisfy
+this first calibration schema.
+
+Run calibration after completing the template:
+
+```bash
+python3 ../tools/run_patch7a_h100_calibration.py \
+  --binary ./analytical_pim \
+  --config ./analytical_pim_patch7a_config.yaml \
+  --output-directory ../data/patch7a_calibrated \
+  --profile ../data/patch7a/h100_profile_completed.csv
+```
+
+The validator rejects test rows, missing/extra/duplicate queries, mixed run or
+device metadata, non-finite timing, stage-sum errors, and any mismatch in
+trace-native bytes or group work. The fit uses stage-supervised least squares
+on validation only and writes calibrated parameters, a parameter manifest,
+per-query residuals, per-workload error, and overall error. Default acceptance
+requires overall MAPE at most 15% and every workload MAPE at most 20%.
+
+The fitted parameters are an effective H100 architecture-level model, not
+cycle-accurate GPU microarchitecture. Patch 7B may freeze an accepted
+validation fit and evaluate untouched test traces; only then is a PIM/H100
+comparison eligible to be reported.
+
 ## Patch 6 Calibration Envelope
 
 Patch 6 performs validation-only sensitivity analysis around the frozen Patch

@@ -32,3 +32,4 @@ configure_file(analytical_pim_config.yaml ${EXECUTABLE_OUTPUT_PATH}/analytical_p
 configure_file(analytical_pim_trace_config.yaml ${EXECUTABLE_OUTPUT_PATH}/analytical_pim_trace_config.yaml COPYONLY)
 configure_file(analytical_pim_trace_final_config.yaml ${EXECUTABLE_OUTPUT_PATH}/analytical_pim_trace_final_config.yaml COPYONLY)
 configure_file(analytical_pim_patch6_config.yaml ${EXECUTABLE_OUTPUT_PATH}/analytical_pim_patch6_config.yaml COPYONLY)
+configure_file(analytical_pim_patch7a_config.yaml ${EXECUTABLE_OUTPUT_PATH}/analytical_pim_patch7a_config.yaml COPYONLY)

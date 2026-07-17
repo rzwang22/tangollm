@@ -81,6 +81,7 @@ struct PEConfig {
   double h100_layout_conversion_group_cycles = 1.0;
   double h100_irregular_gather_penalty = 1.25;
   double h100_small_batch_efficiency = 0.50;
+  double h100_fixed_overhead_cycles = 0.0;
 
   double clock_ns = 1.0;
 };
@@ -450,6 +451,10 @@ struct QueryResult {
   double h100_layout_conversion_cycles = 0.0;
   double h100_irregular_gather_penalty_cycles = 0.0;
   double h100_small_batch_penalty_cycles = 0.0;
+  double h100_fixed_overhead_cycles = 0.0;
+  double h100_gnn_score_groups = 0.0;
+  double h100_gnn_message_groups = 0.0;
+  double h100_cached_kv_groups = 0.0;
   double compute_cycles = 0.0;
   double communication_cycles = 0.0;
   double q_broadcast_cycles = 0.0;
@@ -649,6 +654,8 @@ SimulationConfig LoadConfig(const std::string& config_path) {
       ReadScalar<double>(pe, "h100_irregular_gather_penalty", 1.25);
   config.pe.h100_small_batch_efficiency =
       ReadScalar<double>(pe, "h100_small_batch_efficiency", 0.50);
+  config.pe.h100_fixed_overhead_cycles =
+      ReadScalar<double>(pe, "h100_fixed_overhead_cycles", 0.0);
   config.pe.clock_ns = ReadScalar<double>(pe, "clock_ns", 1.0);
 
   const YAML::Node tile = root["tile"];
@@ -869,6 +876,15 @@ SimulationConfig LoadConfig(const std::string& config_path) {
       config.pe.cached_kv_scale_group_cycles <= 0.0 ||
       config.pe.cached_kv_lut_scale_overlap < 0.0 ||
       config.pe.cached_kv_lut_scale_overlap > 1.0 ||
+      config.pe.h100_group_cycles <= 0.0 ||
+      config.pe.h100_cache_bytes_per_cycle <= 0.0 ||
+      config.pe.h100_int2_unpack_group_cycles <= 0.0 ||
+      config.pe.h100_scale_dequant_group_cycles <= 0.0 ||
+      config.pe.h100_layout_conversion_group_cycles <= 0.0 ||
+      config.pe.h100_irregular_gather_penalty < 1.0 ||
+      config.pe.h100_small_batch_efficiency <= 0.0 ||
+      config.pe.h100_small_batch_efficiency > 1.0 ||
+      config.pe.h100_fixed_overhead_cycles < 0.0 ||
       config.pe.softmax_group_cycles <= 0.0 ||
       config.pe.scheduling_overhead_per_tile_cycles < 0.0 ||
       config.pe.clock_ns <= 0.0 ||
@@ -989,6 +1005,24 @@ double ParseUnitIntervalOverride(const std::string& key,
   return result;
 }
 
+double ParseNonNegativeOverride(const std::string& key,
+                                const std::string& value) {
+  size_t parsed = 0;
+  double result = 0.0;
+  try {
+    result = std::stod(value, &parsed);
+  } catch (const std::exception&) {
+    throw std::runtime_error("Invalid numeric override " + key + "=" +
+                             value);
+  }
+  if (parsed != value.size() || !std::isfinite(result) || result < 0.0) {
+    throw std::runtime_error(
+        "Override must be a non-negative finite number: " + key + "=" +
+        value);
+  }
+  return result;
+}
+
 void ApplyConfigOverrides(SimulationConfig& config,
                           const std::vector<std::string>& overrides) {
   std::map<std::string, double*> numeric_fields = {
@@ -1003,6 +1037,15 @@ void ApplyConfigOverrides(SimulationConfig& config,
        &config.pe.gnn_scale_group_cycles},
       {"near_bank_pe.cached_kv_scale_group_cycles",
        &config.pe.cached_kv_scale_group_cycles},
+      {"near_bank_pe.h100_group_cycles", &config.pe.h100_group_cycles},
+      {"near_bank_pe.h100_cache_bytes_per_cycle",
+       &config.pe.h100_cache_bytes_per_cycle},
+      {"near_bank_pe.h100_int2_unpack_group_cycles",
+       &config.pe.h100_int2_unpack_group_cycles},
+      {"near_bank_pe.h100_scale_dequant_group_cycles",
+       &config.pe.h100_scale_dequant_group_cycles},
+      {"near_bank_pe.h100_layout_conversion_group_cycles",
+       &config.pe.h100_layout_conversion_group_cycles},
       {"communication.q_broadcast_bandwidth_bytes_per_cycle_per_bank",
        &config.communication
             .q_broadcast_bandwidth_bytes_per_cycle_per_bank},
@@ -1038,6 +1081,23 @@ void ApplyConfigOverrides(SimulationConfig& config,
     } else if (key == "near_bank_pe.cached_kv_lut_scale_overlap") {
       config.pe.cached_kv_lut_scale_overlap =
           ParseUnitIntervalOverride(key, value);
+    } else if (key == "near_bank_pe.h100_fixed_overhead_cycles") {
+      config.pe.h100_fixed_overhead_cycles =
+          ParseNonNegativeOverride(key, value);
+    } else if (key == "near_bank_pe.h100_irregular_gather_penalty") {
+      const double penalty = ParsePositiveOverride(key, value);
+      if (penalty < 1.0) {
+        throw std::runtime_error(
+            "H100 irregular gather penalty must be at least 1: " + value);
+      }
+      config.pe.h100_irregular_gather_penalty = penalty;
+    } else if (key == "near_bank_pe.h100_small_batch_efficiency") {
+      const double efficiency = ParseUnitIntervalOverride(key, value);
+      if (efficiency == 0.0) {
+        throw std::runtime_error(
+            "H100 small-batch efficiency must be greater than 0");
+      }
+      config.pe.h100_small_batch_efficiency = efficiency;
     } else if (key == "output.per_query_csv") {
       config.output.per_query_csv = value;
     } else if (key == "output.aggregate_csv") {
@@ -2147,6 +2207,9 @@ QueryResult SimulateQuery(const SimulationConfig& config,
       DiagnoseKVPlacement(selected_count_by_bank);
 
   if (baseline == kH100Ideal || baseline == kH100Realistic) {
+    result.h100_gnn_score_groups = score_groups;
+    result.h100_gnn_message_groups = message_groups;
+    result.h100_cached_kv_groups = cached_kv_groups;
     result.gnn_score_cycles = score_groups * config.pe.h100_group_cycles;
     result.gnn_message_cycles = message_groups * config.pe.h100_group_cycles;
     result.cached_kv_cycles = cached_kv_groups * config.pe.h100_group_cycles;
@@ -2156,7 +2219,7 @@ QueryResult SimulateQuery(const SimulationConfig& config,
       const double efficiency =
           std::min(1.0, std::max(0.01, config.pe.h100_small_batch_efficiency));
       result.h100_cache_read_cycles =
-          result.selected_kv_bytes /
+          result.runtime_loaded_cache_bytes /
           std::max(1.0, config.pe.h100_cache_bytes_per_cycle);
       result.h100_irregular_gather_penalty_cycles =
           result.h100_cache_read_cycles *
@@ -2171,12 +2234,15 @@ QueryResult SimulateQuery(const SimulationConfig& config,
           cached_kv_groups * config.pe.h100_scale_dequant_group_cycles;
       result.h100_layout_conversion_cycles =
           cached_kv_groups * config.pe.h100_layout_conversion_group_cycles;
+      result.h100_fixed_overhead_cycles =
+          config.pe.h100_fixed_overhead_cycles;
       total += result.h100_cache_read_cycles +
                result.h100_irregular_gather_penalty_cycles +
                result.h100_small_batch_penalty_cycles +
                result.h100_int2_unpack_cycles +
                result.h100_scale_dequant_cycles +
-               result.h100_layout_conversion_cycles;
+               result.h100_layout_conversion_cycles +
+               result.h100_fixed_overhead_cycles;
     }
     result.compute_cycles = total;
     result.total_cycles = total;
@@ -2195,7 +2261,8 @@ QueryResult SimulateQuery(const SimulationConfig& config,
          {"h100_irregular_gather_penalty",
           result.h100_irregular_gather_penalty_cycles},
          {"h100_small_batch_penalty",
-          result.h100_small_batch_penalty_cycles}});
+          result.h100_small_batch_penalty_cycles},
+         {"h100_fixed_overhead", result.h100_fixed_overhead_cycles}});
     return result;
   }
 
@@ -2665,7 +2732,9 @@ void WritePerQueryCSV(const std::string& path,
          "h100_int2_unpack_cycles,h100_scale_dequant_cycles,"
          "h100_layout_conversion_cycles,"
          "h100_irregular_gather_penalty_cycles,"
-         "h100_small_batch_penalty_cycles,bottleneck_stage,"
+         "h100_small_batch_penalty_cycles,h100_fixed_overhead_cycles,"
+         "h100_gnn_score_groups,h100_gnn_message_groups,"
+         "h100_cached_kv_groups,bottleneck_stage,"
          "bottleneck_cycles,bottleneck_fraction,score_bottleneck_bank,"
          "message_bottleneck_bank,cached_kv_bottleneck_bank,"
          "duplicate_edge_count,duplicate_edge_ratio,unique_src_dst_count,"
@@ -2780,7 +2849,10 @@ void WritePerQueryCSV(const std::string& path,
         << r.h100_int2_unpack_cycles << "," << r.h100_scale_dequant_cycles
         << "," << r.h100_layout_conversion_cycles << ","
         << r.h100_irregular_gather_penalty_cycles << ","
-        << r.h100_small_batch_penalty_cycles << "," << r.bottleneck_stage << ","
+        << r.h100_small_batch_penalty_cycles << ","
+        << r.h100_fixed_overhead_cycles << "," << r.h100_gnn_score_groups << ","
+        << r.h100_gnn_message_groups << "," << r.h100_cached_kv_groups << ","
+        << r.bottleneck_stage << ","
         << r.bottleneck_cycles << "," << r.bottleneck_fraction << ","
         << r.score_bottleneck_bank << "," << r.message_bottleneck_bank << ","
         << r.cached_kv_bottleneck_bank << "," << g.duplicate_edge_count << ","
@@ -2978,7 +3050,10 @@ void WriteAggregateCSV(const std::string& path,
          "mean_h100_scale_dequant_cycles,"
          "mean_h100_layout_conversion_cycles,"
          "mean_h100_irregular_gather_penalty_cycles,"
-         "mean_h100_small_batch_penalty_cycles,dominant_bottleneck_stage,"
+         "mean_h100_small_batch_penalty_cycles,"
+         "mean_h100_fixed_overhead_cycles,mean_h100_gnn_score_groups,"
+         "mean_h100_gnn_message_groups,mean_h100_cached_kv_groups,"
+         "dominant_bottleneck_stage,"
          "bottleneck_stage_query_fraction,mean_bottleneck_cycles,"
          "mean_bottleneck_fraction,duplicate_edge_count,"
          "duplicate_edge_ratio,unique_src_dst_count,in_degree_mean,"
@@ -3324,6 +3399,18 @@ void WriteAggregateCSV(const std::string& path,
                   << ","
                   << MeanResultField(
                          group, &QueryResult::h100_small_batch_penalty_cycles)
+                  << ","
+                  << MeanResultField(group,
+                                     &QueryResult::h100_fixed_overhead_cycles)
+                  << ","
+                  << MeanResultField(group,
+                                     &QueryResult::h100_gnn_score_groups)
+                  << ","
+                  << MeanResultField(group,
+                                     &QueryResult::h100_gnn_message_groups)
+                  << ","
+                  << MeanResultField(group,
+                                     &QueryResult::h100_cached_kv_groups)
                   << "," << dominant_bottleneck.first << ","
                   << dominant_bottleneck.second << ","
                   << MeanResultField(group, &QueryResult::bottleneck_cycles)
