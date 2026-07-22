@@ -61,7 +61,9 @@ near_bank_pe:
   cached_kv_lut_scale_overlap: 0
   softmax_group_cycles: 1
   scheduling_overhead_per_tile_cycles: 16
-  clock_ns: 1.0
+  # The near-bank PE, reducers, and analytical communication fabric share the
+  # 400 MHz architecture clock in this first-order model.
+  clock_ns: 2.5
 
 tile:
   channel_group: 16
@@ -71,7 +73,48 @@ tile:
 local_buffer:
   resident_head_tiles: 1
   concurrent_destinations_per_bank: 1
-  capacity_bytes_per_bank: 4096
+  capacity_bytes_per_bank: 1024
+
+# First-order 28 nm incremental cost model. These coefficients are explicit
+# provisional assumptions, not RTL synthesis, CACTI, or signoff power data.
+# Replace the coefficients with measured reports without changing the event
+# accounting or area/energy equations.
+cost_model:
+  enabled: true
+  calibration_label: provisional_28nm_v1
+  technology_nm: 28
+  frequency_mhz: 400
+  inactive_leakage_factor: 0.10
+  area:
+    pe_logic_um2_per_bank: 15000
+    local_buffer_um2_per_kib: 8000
+    pc_reducer_um2: 25000
+    global_reducer_um2: 100000
+    router_um2_per_stack: 200000
+  dynamic_energy:
+    q8k8_group_pj: 20
+    p8v8_group_pj: 20
+    q8k2_lut_group_pj: 5
+    p8v2_lut_group_pj: 5
+    scale_group_pj: 10
+    vadd_group_pj: 4
+    pc_reduce_group_pj: 4
+    global_reduce_group_pj: 6
+    cross_stack_merge_group_pj: 6
+    local_buffer_read_pj_per_byte: 0.5
+    local_buffer_write_pj_per_byte: 0.6
+    hbm_read_pj_per_bit: 1.45
+    q_broadcast_pj_per_bit: 0.5
+    bank_to_pc_pj_per_bit: 0.5
+    pc_to_global_pj_per_bit: 0.5
+    global_to_npu_pj_per_bit: 0.8
+    hbm_read_peak_bytes_per_cycle_per_bank: 32
+  leakage:
+    pe_mw_per_bank: 0.05
+    local_buffer_mw_per_kib: 0.02
+    pc_reducer_mw: 0.20
+    global_reducer_mw: 0.80
+    router_mw_per_stack: 1.0
 
 workload_suite:
   seed: 1
@@ -119,3 +162,6 @@ baselines:
 output:
   per_query_csv: ../data/hbm2e_8hi_per_query.csv
   aggregate_csv: ../data/hbm2e_8hi_aggregate.csv
+  hardware_cost_csv: ../data/hbm2e_8hi_hardware_cost.csv
+  cost_per_query_csv: ../data/hbm2e_8hi_cost_per_query.csv
+  cost_aggregate_csv: ../data/hbm2e_8hi_cost_aggregate.csv

@@ -44,7 +44,7 @@ near_bank_pe:
   cached_kv_lut_scale_overlap: 0
   softmax_group_cycles: 1
   scheduling_overhead_per_tile_cycles: 16
-  clock_ns: 1
+  clock_ns: 2.5
 tile:
   channel_group: 16
   head_tile: 1
@@ -52,7 +52,43 @@ tile:
 local_buffer:
   resident_head_tiles: 1
   concurrent_destinations_per_bank: 1
-  capacity_bytes_per_bank: 4096
+  capacity_bytes_per_bank: 1024
+cost_model:
+  enabled: true
+  calibration_label: topology_test_28nm
+  technology_nm: 28
+  frequency_mhz: 400
+  inactive_leakage_factor: 0.10
+  area:
+    pe_logic_um2_per_bank: 15000
+    local_buffer_um2_per_kib: 8000
+    pc_reducer_um2: 25000
+    global_reducer_um2: 100000
+    router_um2_per_stack: 200000
+  dynamic_energy:
+    q8k8_group_pj: 20
+    p8v8_group_pj: 20
+    q8k2_lut_group_pj: 5
+    p8v2_lut_group_pj: 5
+    scale_group_pj: 10
+    vadd_group_pj: 4
+    pc_reduce_group_pj: 4
+    global_reduce_group_pj: 6
+    cross_stack_merge_group_pj: 6
+    local_buffer_read_pj_per_byte: 0.5
+    local_buffer_write_pj_per_byte: 0.6
+    hbm_read_pj_per_bit: 1.45
+    q_broadcast_pj_per_bit: 0.5
+    bank_to_pc_pj_per_bit: 0.5
+    pc_to_global_pj_per_bit: 0.5
+    global_to_npu_pj_per_bit: 0.8
+    hbm_read_peak_bytes_per_cycle_per_bank: 32
+  leakage:
+    pe_mw_per_bank: 0.05
+    local_buffer_mw_per_kib: 0.02
+    pc_reducer_mw: 0.20
+    global_reducer_mw: 0.80
+    router_mw_per_stack: 1.0
 workload_suite:
   full_graph_nodes: 2708
   full_graph_edges: 10556
@@ -94,6 +130,9 @@ baselines: [pim_selective_kv_local_combine]
 output:
   per_query_csv: {directory / f'per_query_{stacks}.csv'}
   aggregate_csv: {directory / f'aggregate_{stacks}.csv'}
+  hardware_cost_csv: {directory / f'hardware_cost_{stacks}.csv'}
+  cost_per_query_csv: {directory / f'cost_per_query_{stacks}.csv'}
+  cost_aggregate_csv: {directory / f'cost_aggregate_{stacks}.csv'}
 """,
         encoding="utf-8",
     )
@@ -143,6 +182,7 @@ def check_topology(binary: Path, directory: Path, stacks: int) -> dict[str, str]
     assert int(row["topology_sid_count"]) == 2
     assert int(aggregate["topology_total_banks"]) == expected_banks
     assert 1 <= int(row["active_stacks"]) <= stacks
+    assert_close(float(row["local_buffer_capacity_bytes_per_bank"]), 1024.0)
 
     critical_groups = float(row["global_reducer_critical_stack_input_groups"])
     total_groups = float(row["global_reducer_input_groups"])
@@ -161,6 +201,46 @@ def check_topology(binary: Path, directory: Path, stacks: int) -> dict[str, str]
     assert_close(
         float(row["global_to_npu_communication_cycles"]),
         expected_global_to_npu,
+    )
+
+    hardware = read_single_row(directory / f"hardware_cost_{stacks}.csv")
+    cost = read_single_row(directory / f"cost_per_query_{stacks}.csv")
+    cost_aggregate = read_single_row(
+        directory / f"cost_aggregate_{stacks}.csv"
+    )
+    assert hardware["calibration_label"] == "topology_test_28nm"
+    assert_close(float(hardware["technology_nm"]), 28.0)
+    assert_close(float(hardware["frequency_mhz"]), 400.0)
+    assert_close(float(hardware["local_buffer_bytes_per_bank"]), 1024.0)
+    assert_close(float(hardware["local_buffer_total_mib"]), 0.5 * stacks)
+    assert_close(float(hardware["pe_count"]), 512.0 * stacks)
+    assert_close(float(hardware["pc_reducer_count"]), 16.0 * stacks)
+    assert_close(float(hardware["global_reducer_count"]), 1.0 * stacks)
+    assert_close(float(hardware["total_incremental_area_mm2"]), 12.476 * stacks)
+    assert_close(float(hardware["all_on_leakage_power_w"]), 0.04084 * stacks)
+
+    assert cost["baseline"] == "pim_selective_kv_local_combine"
+    assert float(cost["graph_score_groups"]) > 0.0
+    assert float(cost["cached_qk_groups"]) > 0.0
+    assert float(cost["modeled_hbm_read_bytes"]) > 0.0
+    assert_close(
+        float(cost["total_energy_nj"]),
+        float(cost["dynamic_energy_nj"]) + float(cost["leakage_energy_nj"]),
+    )
+    assert_close(
+        float(cost["average_power_w"]),
+        float(cost["total_energy_nj"]) / float(cost["latency_ns"]),
+    )
+    assert_close(
+        float(cost["peak_total_power_w"]),
+        float(cost["peak_dynamic_power_w"])
+        + float(cost["leakage_power_activity_gated_w"]),
+    )
+    assert float(cost["peak_total_power_w"]) >= float(cost["average_power_w"])
+    assert int(cost_aggregate["num_queries"]) == 1
+    assert_close(
+        float(cost_aggregate["mean_total_energy_nj"]),
+        float(cost["total_energy_nj"]),
     )
     return row
 
@@ -182,7 +262,21 @@ def main() -> None:
         assert invalid.returncode != 0
         assert "banks_per_pseudo_channel must equal" in invalid.stdout
 
-    print("HBM2E 8-Hi topology tests passed: 512 banks/stack, 2560 banks/5 stacks")
+        frequency_mismatch = write_config(directory, 1)
+        frequency_mismatch.write_text(
+            frequency_mismatch.read_text(encoding="utf-8").replace(
+                "frequency_mhz: 400", "frequency_mhz: 800"
+            ),
+            encoding="utf-8",
+        )
+        mismatch = run(binary, frequency_mismatch)
+        assert mismatch.returncode != 0
+        assert "frequency_mhz must match" in mismatch.stdout
+
+    print(
+        "HBM2E 8-Hi topology/cost tests passed: "
+        "512 banks/stack, 1 KiB/bank, 400 MHz, 28 nm"
+    )
 
 
 if __name__ == "__main__":

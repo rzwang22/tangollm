@@ -17,6 +17,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -214,9 +215,52 @@ struct ReducerConfig {
   double cross_stack_merge_throughput_groups_per_cycle_per_lane = 1.0;
 };
 
+struct CostModelConfig {
+  bool enabled = false;
+  std::string calibration_label = "provisional_28nm_v1";
+  double technology_nm = 28.0;
+  double frequency_mhz = 1000.0;
+  double inactive_leakage_factor = 0.10;
+
+  double pe_logic_um2_per_bank = 15000.0;
+  double local_buffer_um2_per_kib = 8000.0;
+  double pc_reducer_um2 = 25000.0;
+  double global_reducer_um2 = 100000.0;
+  double router_um2_per_stack = 200000.0;
+
+  double q8k8_group_pj = 20.0;
+  double p8v8_group_pj = 20.0;
+  double q8k2_lut_group_pj = 5.0;
+  double p8v2_lut_group_pj = 5.0;
+  double scale_group_pj = 10.0;
+  double vadd_group_pj = 4.0;
+  double pc_reduce_group_pj = 4.0;
+  double global_reduce_group_pj = 6.0;
+  double cross_stack_merge_group_pj = 6.0;
+  double local_buffer_read_pj_per_byte = 0.5;
+  double local_buffer_write_pj_per_byte = 0.6;
+  double hbm_read_pj_per_bit = 1.45;
+  double q_broadcast_pj_per_bit = 0.5;
+  double bank_to_pc_pj_per_bit = 0.5;
+  double pc_to_global_pj_per_bit = 0.5;
+  double global_to_npu_pj_per_bit = 0.8;
+  double hbm_read_peak_bytes_per_cycle_per_bank = 32.0;
+
+  double pe_leakage_mw_per_bank = 0.05;
+  double local_buffer_leakage_mw_per_kib = 0.02;
+  double pc_reducer_leakage_mw = 0.20;
+  double global_reducer_leakage_mw = 0.80;
+  double router_leakage_mw_per_stack = 1.0;
+};
+
 struct OutputConfig {
   std::string per_query_csv = "../data/analytical_pim_per_query.csv";
   std::string aggregate_csv = "../data/analytical_pim_aggregate.csv";
+  std::string hardware_cost_csv = "../data/analytical_pim_hardware_cost.csv";
+  std::string cost_per_query_csv =
+      "../data/analytical_pim_cost_per_query.csv";
+  std::string cost_aggregate_csv =
+      "../data/analytical_pim_cost_aggregate.csv";
 };
 
 struct Edge {
@@ -357,6 +401,7 @@ struct SimulationConfig {
   HybridPlacementConfig hybrid;
   CommunicationConfig communication;
   ReducerConfig reducer;
+  CostModelConfig cost;
   OutputConfig output;
   std::vector<std::string> placements{kPlacementHash, kPlacementDegreeBalanced,
                                       kPlacementSourceDstLocality,
@@ -968,6 +1013,77 @@ SimulationConfig LoadConfig(const std::string& config_path) {
           reducer,
           "cross_stack_merge_throughput_groups_per_cycle_per_lane", 1.0);
 
+  const YAML::Node cost = root["cost_model"];
+  config.cost.enabled = ReadScalar<bool>(cost, "enabled", false);
+  config.cost.calibration_label = ReadScalar<std::string>(
+      cost, "calibration_label", "provisional_28nm_v1");
+  config.cost.technology_nm =
+      ReadScalar<double>(cost, "technology_nm", 28.0);
+  config.cost.frequency_mhz = ReadScalar<double>(
+      cost, "frequency_mhz", 1000.0 / config.pe.clock_ns);
+  config.cost.inactive_leakage_factor =
+      ReadScalar<double>(cost, "inactive_leakage_factor", 0.10);
+
+  const YAML::Node area = cost["area"];
+  config.cost.pe_logic_um2_per_bank =
+      ReadScalar<double>(area, "pe_logic_um2_per_bank", 15000.0);
+  config.cost.local_buffer_um2_per_kib =
+      ReadScalar<double>(area, "local_buffer_um2_per_kib", 8000.0);
+  config.cost.pc_reducer_um2 =
+      ReadScalar<double>(area, "pc_reducer_um2", 25000.0);
+  config.cost.global_reducer_um2 =
+      ReadScalar<double>(area, "global_reducer_um2", 100000.0);
+  config.cost.router_um2_per_stack =
+      ReadScalar<double>(area, "router_um2_per_stack", 200000.0);
+
+  const YAML::Node energy = cost["dynamic_energy"];
+  config.cost.q8k8_group_pj =
+      ReadScalar<double>(energy, "q8k8_group_pj", 20.0);
+  config.cost.p8v8_group_pj =
+      ReadScalar<double>(energy, "p8v8_group_pj", 20.0);
+  config.cost.q8k2_lut_group_pj =
+      ReadScalar<double>(energy, "q8k2_lut_group_pj", 5.0);
+  config.cost.p8v2_lut_group_pj =
+      ReadScalar<double>(energy, "p8v2_lut_group_pj", 5.0);
+  config.cost.scale_group_pj =
+      ReadScalar<double>(energy, "scale_group_pj", 10.0);
+  config.cost.vadd_group_pj =
+      ReadScalar<double>(energy, "vadd_group_pj", 4.0);
+  config.cost.pc_reduce_group_pj =
+      ReadScalar<double>(energy, "pc_reduce_group_pj", 4.0);
+  config.cost.global_reduce_group_pj =
+      ReadScalar<double>(energy, "global_reduce_group_pj", 6.0);
+  config.cost.cross_stack_merge_group_pj = ReadScalar<double>(
+      energy, "cross_stack_merge_group_pj", 6.0);
+  config.cost.local_buffer_read_pj_per_byte = ReadScalar<double>(
+      energy, "local_buffer_read_pj_per_byte", 0.5);
+  config.cost.local_buffer_write_pj_per_byte = ReadScalar<double>(
+      energy, "local_buffer_write_pj_per_byte", 0.6);
+  config.cost.hbm_read_pj_per_bit =
+      ReadScalar<double>(energy, "hbm_read_pj_per_bit", 1.45);
+  config.cost.q_broadcast_pj_per_bit =
+      ReadScalar<double>(energy, "q_broadcast_pj_per_bit", 0.5);
+  config.cost.bank_to_pc_pj_per_bit =
+      ReadScalar<double>(energy, "bank_to_pc_pj_per_bit", 0.5);
+  config.cost.pc_to_global_pj_per_bit =
+      ReadScalar<double>(energy, "pc_to_global_pj_per_bit", 0.5);
+  config.cost.global_to_npu_pj_per_bit =
+      ReadScalar<double>(energy, "global_to_npu_pj_per_bit", 0.8);
+  config.cost.hbm_read_peak_bytes_per_cycle_per_bank = ReadScalar<double>(
+      energy, "hbm_read_peak_bytes_per_cycle_per_bank", 32.0);
+
+  const YAML::Node leakage = cost["leakage"];
+  config.cost.pe_leakage_mw_per_bank =
+      ReadScalar<double>(leakage, "pe_mw_per_bank", 0.05);
+  config.cost.local_buffer_leakage_mw_per_kib = ReadScalar<double>(
+      leakage, "local_buffer_mw_per_kib", 0.02);
+  config.cost.pc_reducer_leakage_mw =
+      ReadScalar<double>(leakage, "pc_reducer_mw", 0.20);
+  config.cost.global_reducer_leakage_mw =
+      ReadScalar<double>(leakage, "global_reducer_mw", 0.80);
+  config.cost.router_leakage_mw_per_stack =
+      ReadScalar<double>(leakage, "router_mw_per_stack", 1.0);
+
   auto placements = ReadStringVector(root["graph_compute_placement_sweep"]);
   if (placements.empty()) {
     placements = ReadStringVector(root["placement_sweep"]);
@@ -990,6 +1106,15 @@ SimulationConfig LoadConfig(const std::string& config_path) {
       output, "per_query_csv", "../data/analytical_pim_per_query.csv");
   config.output.aggregate_csv = ReadScalar<std::string>(
       output, "aggregate_csv", "../data/analytical_pim_aggregate.csv");
+  config.output.hardware_cost_csv = ReadScalar<std::string>(
+      output, "hardware_cost_csv",
+      "../data/analytical_pim_hardware_cost.csv");
+  config.output.cost_per_query_csv = ReadScalar<std::string>(
+      output, "cost_per_query_csv",
+      "../data/analytical_pim_cost_per_query.csv");
+  config.output.cost_aggregate_csv = ReadScalar<std::string>(
+      output, "cost_aggregate_csv",
+      "../data/analytical_pim_cost_aggregate.csv");
 
   if ((config.workload_mode != "synthetic" &&
        config.workload_mode != "trace") ||
@@ -1061,8 +1186,49 @@ SimulationConfig LoadConfig(const std::string& config_path) {
       config.reducer.cross_stack_merge_lanes <= 0 ||
       config.reducer
               .cross_stack_merge_throughput_groups_per_cycle_per_lane <=
-          0.0) {
+          0.0 ||
+      (config.cost.enabled &&
+       (config.cost.calibration_label.empty() ||
+        config.cost.technology_nm <= 0.0 ||
+        config.cost.frequency_mhz <= 0.0 ||
+        config.cost.inactive_leakage_factor < 0.0 ||
+        config.cost.inactive_leakage_factor > 1.0 ||
+        config.cost.pe_logic_um2_per_bank < 0.0 ||
+        config.cost.local_buffer_um2_per_kib < 0.0 ||
+        config.cost.pc_reducer_um2 < 0.0 ||
+        config.cost.global_reducer_um2 < 0.0 ||
+        config.cost.router_um2_per_stack < 0.0 ||
+        config.cost.q8k8_group_pj < 0.0 ||
+        config.cost.p8v8_group_pj < 0.0 ||
+        config.cost.q8k2_lut_group_pj < 0.0 ||
+        config.cost.p8v2_lut_group_pj < 0.0 ||
+        config.cost.scale_group_pj < 0.0 ||
+        config.cost.vadd_group_pj < 0.0 ||
+        config.cost.pc_reduce_group_pj < 0.0 ||
+        config.cost.global_reduce_group_pj < 0.0 ||
+        config.cost.cross_stack_merge_group_pj < 0.0 ||
+        config.cost.local_buffer_read_pj_per_byte < 0.0 ||
+        config.cost.local_buffer_write_pj_per_byte < 0.0 ||
+        config.cost.hbm_read_pj_per_bit < 0.0 ||
+        config.cost.q_broadcast_pj_per_bit < 0.0 ||
+        config.cost.bank_to_pc_pj_per_bit < 0.0 ||
+        config.cost.pc_to_global_pj_per_bit < 0.0 ||
+        config.cost.global_to_npu_pj_per_bit < 0.0 ||
+        config.cost.hbm_read_peak_bytes_per_cycle_per_bank <= 0.0 ||
+        config.cost.pe_leakage_mw_per_bank < 0.0 ||
+        config.cost.local_buffer_leakage_mw_per_kib < 0.0 ||
+        config.cost.pc_reducer_leakage_mw < 0.0 ||
+        config.cost.global_reducer_leakage_mw < 0.0 ||
+        config.cost.router_leakage_mw_per_stack < 0.0))) {
     throw std::runtime_error("Invalid analytical PIM config");
+  }
+  if (config.cost.enabled) {
+    const double expected_clock_ns = 1000.0 / config.cost.frequency_mhz;
+    if (std::abs(config.pe.clock_ns - expected_clock_ns) >
+        1e-6 * std::max(1.0, expected_clock_ns)) {
+      throw std::runtime_error(
+          "cost_model.frequency_mhz must match near_bank_pe.clock_ns");
+    }
   }
   for (const auto& workload : config.suite.workloads) {
     if ((workload.degree_distribution != "uniform" &&
@@ -1304,6 +1470,16 @@ void PrintSanityCheck(const SimulationConfig& config) {
             << config.local_buffer.concurrent_destinations_per_bank
             << ", capacity_bytes_per_bank="
             << config.local_buffer.capacity_bytes_per_bank << "\n";
+  if (config.cost.enabled) {
+    std::cout << "cost_model: calibration="
+              << config.cost.calibration_label
+              << std::fixed << std::setprecision(2)
+              << ", technology_nm=" << config.cost.technology_nm
+              << ", frequency_mhz=" << config.cost.frequency_mhz
+              << ", inactive_leakage_factor="
+              << config.cost.inactive_leakage_factor
+              << ", status=provisional_not_rtl_cacti_calibrated\n";
+  }
   std::cout << "pe_group_cycles: q8k8=" << config.pe.q8k8_group_cycles
             << ", p8v8=" << config.pe.p8v8_group_cycles
             << ", q8k2_lut=" << config.pe.q8k2_lut_group_cycles
@@ -4015,6 +4191,523 @@ void WriteAggregateCSV(const std::string& path,
   }
 }
 
+struct HardwareCostMetrics {
+  double pe_count = 0.0;
+  double pc_reducer_count = 0.0;
+  double global_reducer_count = 0.0;
+  double local_buffer_kib_per_bank = 0.0;
+  double local_buffer_total_mib = 0.0;
+  double pe_logic_area_mm2 = 0.0;
+  double local_buffer_area_mm2 = 0.0;
+  double pc_reducer_area_mm2 = 0.0;
+  double global_reducer_area_mm2 = 0.0;
+  double router_area_mm2 = 0.0;
+  double total_incremental_area_mm2 = 0.0;
+  double incremental_area_per_stack_mm2 = 0.0;
+  double near_bank_area_per_dram_die_mm2 = 0.0;
+  double buffer_die_logic_area_per_stack_mm2 = 0.0;
+  double all_on_leakage_power_w = 0.0;
+  double power_gated_idle_leakage_power_w = 0.0;
+};
+
+struct QueryCostMetrics {
+  double graph_score_groups = 0.0;
+  double graph_message_groups = 0.0;
+  double cached_qk_groups = 0.0;
+  double cached_pv_groups = 0.0;
+  double scale_groups = 0.0;
+  double local_buffer_read_bytes = 0.0;
+  double local_buffer_write_bytes = 0.0;
+  double modeled_hbm_read_bytes = 0.0;
+  double q8k8_energy_nj = 0.0;
+  double p8v8_energy_nj = 0.0;
+  double q8k2_lut_energy_nj = 0.0;
+  double p8v2_lut_energy_nj = 0.0;
+  double scale_energy_nj = 0.0;
+  double vadd_energy_nj = 0.0;
+  double local_buffer_energy_nj = 0.0;
+  double hbm_read_energy_nj = 0.0;
+  double communication_energy_nj = 0.0;
+  double reducer_energy_nj = 0.0;
+  double dynamic_energy_nj = 0.0;
+  double leakage_power_all_on_w = 0.0;
+  double leakage_power_activity_gated_w = 0.0;
+  double leakage_energy_nj = 0.0;
+  double total_energy_nj = 0.0;
+  double average_power_w = 0.0;
+  double peak_dynamic_power_w = 0.0;
+  double peak_total_power_w = 0.0;
+  double energy_delay_product_j_s = 0.0;
+};
+
+bool IsPIMBaseline(const std::string& baseline) {
+  return baseline == kPIMNoLocalCombine || baseline == kPIMLocalCombine;
+}
+
+HardwareCostMetrics CalculateHardwareCost(const SimulationConfig& config) {
+  HardwareCostMetrics metrics;
+  metrics.pe_count =
+      1.0 * config.topology.total_banks() * config.topology.pe_per_bank;
+  metrics.pc_reducer_count = config.topology.total_pseudo_channels();
+  metrics.global_reducer_count =
+      1.0 * config.topology.num_stacks * config.reducer.global_units;
+  metrics.local_buffer_kib_per_bank =
+      config.local_buffer.capacity_bytes_per_bank / 1024.0;
+  metrics.local_buffer_total_mib =
+      config.topology.total_banks() *
+      config.local_buffer.capacity_bytes_per_bank / (1024.0 * 1024.0);
+
+  metrics.pe_logic_area_mm2 =
+      metrics.pe_count * config.cost.pe_logic_um2_per_bank / 1.0e6;
+  metrics.local_buffer_area_mm2 =
+      config.topology.total_banks() * metrics.local_buffer_kib_per_bank *
+      config.cost.local_buffer_um2_per_kib / 1.0e6;
+  metrics.pc_reducer_area_mm2 =
+      metrics.pc_reducer_count * config.cost.pc_reducer_um2 / 1.0e6;
+  metrics.global_reducer_area_mm2 = metrics.global_reducer_count *
+                                    config.cost.global_reducer_um2 / 1.0e6;
+  metrics.router_area_mm2 = config.topology.num_stacks *
+                            config.cost.router_um2_per_stack / 1.0e6;
+  metrics.total_incremental_area_mm2 =
+      metrics.pe_logic_area_mm2 + metrics.local_buffer_area_mm2 +
+      metrics.pc_reducer_area_mm2 + metrics.global_reducer_area_mm2 +
+      metrics.router_area_mm2;
+  metrics.incremental_area_per_stack_mm2 =
+      metrics.total_incremental_area_mm2 / config.topology.num_stacks;
+  const double total_dram_dies =
+      1.0 * config.topology.num_stacks *
+      std::max(1, config.topology.dies_per_stack);
+  metrics.near_bank_area_per_dram_die_mm2 =
+      (metrics.pe_logic_area_mm2 + metrics.local_buffer_area_mm2) /
+      total_dram_dies;
+  metrics.buffer_die_logic_area_per_stack_mm2 =
+      (metrics.pc_reducer_area_mm2 + metrics.global_reducer_area_mm2 +
+       metrics.router_area_mm2) /
+      config.topology.num_stacks;
+
+  const double all_on_leakage_mw =
+      metrics.pe_count * config.cost.pe_leakage_mw_per_bank +
+      config.topology.total_banks() * metrics.local_buffer_kib_per_bank *
+          config.cost.local_buffer_leakage_mw_per_kib +
+      metrics.pc_reducer_count * config.cost.pc_reducer_leakage_mw +
+      metrics.global_reducer_count *
+          config.cost.global_reducer_leakage_mw +
+      config.topology.num_stacks *
+          config.cost.router_leakage_mw_per_stack;
+  metrics.all_on_leakage_power_w = all_on_leakage_mw / 1000.0;
+  metrics.power_gated_idle_leakage_power_w =
+      metrics.all_on_leakage_power_w * config.cost.inactive_leakage_factor;
+  return metrics;
+}
+
+double ActivityGatedLeakageMilliwatts(double provisioned,
+                                      double active,
+                                      double leakage_mw_per_unit,
+                                      double inactive_factor) {
+  active = std::max(0.0, std::min(provisioned, active));
+  return (active + (provisioned - active) * inactive_factor) *
+         leakage_mw_per_unit;
+}
+
+double PicojoulesPerCycleToWatts(double picojoules_per_cycle,
+                                 double frequency_mhz) {
+  return picojoules_per_cycle * frequency_mhz * 1.0e-6;
+}
+
+QueryCostMetrics CalculateQueryCost(const QueryResult& result,
+                                    const SimulationConfig& config,
+                                    const HardwareCostMetrics& hardware) {
+  QueryCostMetrics metrics;
+  const double groups_per_head = GroupsPerHead(config);
+  metrics.graph_score_groups =
+      1.0 * result.sampled_edge_count * config.model.memory_tokens *
+      config.model.gnn_heads * groups_per_head * result.gnn_layer_count;
+  metrics.graph_message_groups = metrics.graph_score_groups;
+  metrics.cached_qk_groups = result.trace_cached_qk_groups;
+  metrics.cached_pv_groups = result.trace_cached_pv_groups;
+  metrics.scale_groups = metrics.graph_score_groups +
+                         metrics.graph_message_groups +
+                         metrics.cached_qk_groups + metrics.cached_pv_groups;
+
+  const double message_bytes_per_group =
+      config.tile.channel_group * config.precision.partial_msg_bytes;
+  metrics.local_buffer_read_bytes =
+      result.local_vadd_operation_groups * message_bytes_per_group;
+  metrics.local_buffer_write_bytes =
+      (result.local_vadd_initialization_groups +
+       result.local_vadd_operation_groups) *
+      message_bytes_per_group;
+  metrics.modeled_hbm_read_bytes = result.runtime_loaded_cache_bytes;
+
+  metrics.q8k8_energy_nj =
+      metrics.graph_score_groups * config.cost.q8k8_group_pj / 1000.0;
+  metrics.p8v8_energy_nj =
+      metrics.graph_message_groups * config.cost.p8v8_group_pj / 1000.0;
+  metrics.q8k2_lut_energy_nj =
+      metrics.cached_qk_groups * config.cost.q8k2_lut_group_pj / 1000.0;
+  metrics.p8v2_lut_energy_nj =
+      metrics.cached_pv_groups * config.cost.p8v2_lut_group_pj / 1000.0;
+  metrics.scale_energy_nj =
+      metrics.scale_groups * config.cost.scale_group_pj / 1000.0;
+  metrics.vadd_energy_nj = result.local_vadd_operation_groups *
+                           config.cost.vadd_group_pj / 1000.0;
+  metrics.local_buffer_energy_nj =
+      (metrics.local_buffer_read_bytes *
+           config.cost.local_buffer_read_pj_per_byte +
+       metrics.local_buffer_write_bytes *
+           config.cost.local_buffer_write_pj_per_byte) /
+      1000.0;
+  metrics.hbm_read_energy_nj =
+      metrics.modeled_hbm_read_bytes * 8.0 *
+      config.cost.hbm_read_pj_per_bit / 1000.0;
+  metrics.communication_energy_nj =
+      (result.q_broadcast_bytes * 8.0 *
+           config.cost.q_broadcast_pj_per_bit +
+       result.bank_to_pc_total_bytes * 8.0 *
+           config.cost.bank_to_pc_pj_per_bit +
+       result.pc_to_global_total_bytes * 8.0 *
+           config.cost.pc_to_global_pj_per_bit +
+       result.global_to_npu_bytes * 8.0 *
+           config.cost.global_to_npu_pj_per_bit) /
+      1000.0;
+  metrics.reducer_energy_nj =
+      (result.pc_reducer_input_groups *
+           config.cost.pc_reduce_group_pj +
+       result.global_reducer_input_groups *
+           config.cost.global_reduce_group_pj +
+       result.cross_stack_duplicate_output_groups *
+           config.cost.cross_stack_merge_group_pj) /
+      1000.0;
+  metrics.dynamic_energy_nj =
+      metrics.q8k8_energy_nj + metrics.p8v8_energy_nj +
+      metrics.q8k2_lut_energy_nj + metrics.p8v2_lut_energy_nj +
+      metrics.scale_energy_nj + metrics.vadd_energy_nj +
+      metrics.local_buffer_energy_nj + metrics.hbm_read_energy_nj +
+      metrics.communication_energy_nj + metrics.reducer_energy_nj;
+
+  const double total_pe_count = hardware.pe_count;
+  const double active_pe_count =
+      std::min(total_pe_count,
+               1.0 * result.active_banks * config.topology.pe_per_bank);
+  const double local_buffer_kib = hardware.local_buffer_kib_per_bank;
+  const double active_buffer_banks =
+      result.baseline == kPIMLocalCombine
+          ? result.placement_validation.edge_active_banks
+          : 0.0;
+  const double active_pc_count =
+      std::min(hardware.pc_reducer_count,
+               1.0 * result.active_pseudo_channels);
+  const double active_global_reducers =
+      std::min(hardware.global_reducer_count,
+               1.0 * result.active_stacks * config.reducer.global_units);
+  const double active_routers =
+      std::min(1.0 * config.topology.num_stacks,
+               1.0 * result.active_stacks);
+  const double gated_leakage_mw =
+      ActivityGatedLeakageMilliwatts(
+          total_pe_count, active_pe_count,
+          config.cost.pe_leakage_mw_per_bank,
+          config.cost.inactive_leakage_factor) +
+      ActivityGatedLeakageMilliwatts(
+          config.topology.total_banks(), active_buffer_banks,
+          local_buffer_kib * config.cost.local_buffer_leakage_mw_per_kib,
+          config.cost.inactive_leakage_factor) +
+      ActivityGatedLeakageMilliwatts(
+          hardware.pc_reducer_count, active_pc_count,
+          config.cost.pc_reducer_leakage_mw,
+          config.cost.inactive_leakage_factor) +
+      ActivityGatedLeakageMilliwatts(
+          hardware.global_reducer_count, active_global_reducers,
+          config.cost.global_reducer_leakage_mw,
+          config.cost.inactive_leakage_factor) +
+      ActivityGatedLeakageMilliwatts(
+          config.topology.num_stacks, active_routers,
+          config.cost.router_leakage_mw_per_stack,
+          config.cost.inactive_leakage_factor);
+  metrics.leakage_power_all_on_w = hardware.all_on_leakage_power_w;
+  metrics.leakage_power_activity_gated_w = gated_leakage_mw / 1000.0;
+  metrics.leakage_energy_nj =
+      metrics.leakage_power_activity_gated_w * result.latency_ns;
+  metrics.total_energy_nj =
+      metrics.dynamic_energy_nj + metrics.leakage_energy_nj;
+  metrics.average_power_w =
+      result.latency_ns == 0.0 ? 0.0
+                               : metrics.total_energy_nj / result.latency_ns;
+
+  const double active_edge_banks =
+      result.placement_validation.edge_active_banks;
+  const double active_kv_banks = result.kv_placement_diagnosis.active_banks;
+  double graph_compute_pj_per_group =
+      std::max({config.cost.q8k8_group_pj,
+                config.cost.p8v8_group_pj,
+                config.cost.scale_group_pj});
+  if (result.baseline == kPIMLocalCombine) {
+    graph_compute_pj_per_group = std::max(
+        graph_compute_pj_per_group,
+        config.cost.vadd_group_pj +
+            message_bytes_per_group *
+                (config.cost.local_buffer_read_pj_per_byte +
+                 config.cost.local_buffer_write_pj_per_byte));
+  }
+  const double graph_compute_pj_per_cycle =
+      active_edge_banks * graph_compute_pj_per_group;
+  const double kv_lut_pj =
+      std::max(config.cost.q8k2_lut_group_pj,
+               config.cost.p8v2_lut_group_pj);
+  const double kv_compute_pj_per_cycle =
+      active_kv_banks *
+      (std::max(kv_lut_pj, config.cost.scale_group_pj) +
+       config.pe.cached_kv_lut_scale_overlap *
+           std::min(kv_lut_pj, config.cost.scale_group_pj));
+  const double hbm_read_pj_per_cycle =
+      active_kv_banks *
+      config.cost.hbm_read_peak_bytes_per_cycle_per_bank * 8.0 *
+      config.cost.hbm_read_pj_per_bit;
+  const int pc_effective_lanes = std::min(
+      config.reducer.pc_lanes_per_pseudo_channel,
+      config.reducer.pc_concurrent_destination_groups);
+  const int global_effective_lanes = std::min(
+      config.reducer.global_units * config.reducer.global_lanes_per_unit,
+      config.reducer.global_concurrent_destination_groups);
+  const double pc_reduce_pj_per_cycle =
+      result.placement_validation.edge_active_pseudo_channels *
+      pc_effective_lanes *
+      config.reducer.pc_throughput_groups_per_cycle_per_lane *
+      config.cost.pc_reduce_group_pj;
+  const double global_reduce_pj_per_cycle =
+      result.placement_validation.edge_active_stacks *
+      global_effective_lanes *
+      config.reducer.global_throughput_groups_per_cycle_per_lane *
+      config.cost.global_reduce_group_pj;
+  const double cross_stack_pj_per_cycle =
+      result.cross_stack_duplicate_output_groups > 0.0
+          ? config.reducer.cross_stack_merge_lanes *
+                config.reducer
+                    .cross_stack_merge_throughput_groups_per_cycle_per_lane *
+                config.cost.cross_stack_merge_group_pj
+          : 0.0;
+  const double q_broadcast_pj_per_cycle =
+      active_edge_banks *
+      config.communication.q_broadcast_bandwidth_bytes_per_cycle_per_bank *
+      8.0 * config.cost.q_broadcast_pj_per_bit;
+  const double bank_to_pc_pj_per_cycle =
+      active_edge_banks *
+      config.communication.bank_to_pc_bandwidth_bytes_per_cycle_per_bank *
+      8.0 * config.cost.bank_to_pc_pj_per_bit;
+  const double pc_to_global_pj_per_cycle =
+      result.placement_validation.edge_active_pseudo_channels *
+      config.communication.pc_to_global_bandwidth_bytes_per_cycle_per_pc *
+      8.0 * config.cost.pc_to_global_pj_per_bit;
+  const double active_global_to_npu_bandwidth =
+      std::min(result.placement_validation.edge_active_stacks *
+                   config.communication
+                       .global_to_npu_bandwidth_bytes_per_cycle_per_stack,
+               config.communication
+                   .global_to_npu_aggregate_bandwidth_bytes_per_cycle);
+  const double global_to_npu_pj_per_cycle =
+      active_global_to_npu_bandwidth * 8.0 *
+      config.cost.global_to_npu_pj_per_bit;
+  const double peak_dynamic_pj_per_cycle =
+      std::max({graph_compute_pj_per_cycle, kv_compute_pj_per_cycle,
+                hbm_read_pj_per_cycle, pc_reduce_pj_per_cycle,
+                global_reduce_pj_per_cycle, cross_stack_pj_per_cycle,
+                q_broadcast_pj_per_cycle, bank_to_pc_pj_per_cycle,
+                pc_to_global_pj_per_cycle, global_to_npu_pj_per_cycle});
+  metrics.peak_dynamic_power_w = PicojoulesPerCycleToWatts(
+      peak_dynamic_pj_per_cycle, config.cost.frequency_mhz);
+  metrics.peak_total_power_w =
+      metrics.peak_dynamic_power_w +
+      metrics.leakage_power_activity_gated_w;
+  metrics.energy_delay_product_j_s =
+      metrics.total_energy_nj * result.latency_ns * 1.0e-18;
+  return metrics;
+}
+
+void WriteHardwareCostCSV(const std::string& path,
+                          const SimulationConfig& config,
+                          const HardwareCostMetrics& metrics) {
+  PrepareCSV(path);
+  std::ofstream csv(path);
+  if (!csv.is_open()) {
+    throw std::runtime_error("Cannot open hardware cost CSV: " + path);
+  }
+  csv << "calibration_label,technology_nm,frequency_mhz,memory_standard,"
+         "num_stacks,dies_per_stack,total_banks,pe_count,pc_reducer_count,"
+         "global_reducer_count,local_buffer_bytes_per_bank,"
+         "local_buffer_total_mib,pe_logic_area_mm2,local_buffer_area_mm2,"
+         "pc_reducer_area_mm2,global_reducer_area_mm2,router_area_mm2,"
+         "total_incremental_area_mm2,incremental_area_per_stack_mm2,"
+         "near_bank_area_per_dram_die_mm2,"
+         "buffer_die_logic_area_per_stack_mm2,all_on_leakage_power_w,"
+         "inactive_leakage_factor,power_gated_idle_leakage_power_w,"
+         "calibration_status\n";
+  csv << std::fixed << std::setprecision(6)
+      << config.cost.calibration_label << "," << config.cost.technology_nm
+      << "," << config.cost.frequency_mhz << ","
+      << config.topology.memory_standard << ","
+      << config.topology.num_stacks << ","
+      << config.topology.dies_per_stack << ","
+      << config.topology.total_banks() << "," << metrics.pe_count << ","
+      << metrics.pc_reducer_count << "," << metrics.global_reducer_count
+      << "," << config.local_buffer.capacity_bytes_per_bank << ","
+      << metrics.local_buffer_total_mib << ","
+      << metrics.pe_logic_area_mm2 << ","
+      << metrics.local_buffer_area_mm2 << ","
+      << metrics.pc_reducer_area_mm2 << ","
+      << metrics.global_reducer_area_mm2 << "," << metrics.router_area_mm2
+      << "," << metrics.total_incremental_area_mm2 << ","
+      << metrics.incremental_area_per_stack_mm2 << ","
+      << metrics.near_bank_area_per_dram_die_mm2 << ","
+      << metrics.buffer_die_logic_area_per_stack_mm2 << ","
+      << metrics.all_on_leakage_power_w << ","
+      << config.cost.inactive_leakage_factor << ","
+      << metrics.power_gated_idle_leakage_power_w
+      << ",provisional_not_rtl_cacti_calibrated\n";
+}
+
+void WriteCostPerQueryCSV(const std::string& path,
+                          const std::vector<QueryResult>& results,
+                          const SimulationConfig& config,
+                          const HardwareCostMetrics& hardware) {
+  PrepareCSV(path);
+  std::ofstream csv(path);
+  if (!csv.is_open()) {
+    throw std::runtime_error("Cannot open per-query cost CSV: " + path);
+  }
+  csv << "workload,dataset,split,evaluation_role,query_id,trace_order,"
+         "graph_compute_placement,kv_storage_placement,baseline,"
+         "memory_token_tile,calibration_label,technology_nm,frequency_mhz,"
+         "latency_ns,total_incremental_area_mm2,graph_score_groups,"
+         "graph_message_groups,cached_qk_groups,cached_pv_groups,"
+         "scale_groups,local_buffer_read_bytes,local_buffer_write_bytes,"
+         "modeled_hbm_read_bytes,q8k8_energy_nj,p8v8_energy_nj,"
+         "q8k2_lut_energy_nj,p8v2_lut_energy_nj,scale_energy_nj,"
+         "vadd_energy_nj,local_buffer_energy_nj,hbm_read_energy_nj,"
+         "communication_energy_nj,reducer_energy_nj,dynamic_energy_nj,"
+         "leakage_power_all_on_w,leakage_power_activity_gated_w,"
+         "leakage_energy_nj,total_energy_nj,average_power_w,"
+         "peak_dynamic_power_w,peak_total_power_w,"
+         "energy_delay_product_j_s\n";
+  csv << std::fixed << std::setprecision(6);
+  for (const auto& result : results) {
+    if (!IsPIMBaseline(result.baseline)) {
+      continue;
+    }
+    const QueryCostMetrics cost =
+        CalculateQueryCost(result, config, hardware);
+    csv << result.workload << "," << result.dataset << "," << result.split
+        << "," << result.evaluation_role << "," << result.query_id << ","
+        << result.trace_order << "," << result.graph_compute_placement << ","
+        << result.kv_storage_placement << "," << result.baseline << ","
+        << result.memory_token_tile << "," << config.cost.calibration_label
+        << "," << config.cost.technology_nm << ","
+        << config.cost.frequency_mhz << "," << result.latency_ns << ","
+        << hardware.total_incremental_area_mm2 << ","
+        << cost.graph_score_groups << "," << cost.graph_message_groups << ","
+        << cost.cached_qk_groups << "," << cost.cached_pv_groups << ","
+        << cost.scale_groups << "," << cost.local_buffer_read_bytes << ","
+        << cost.local_buffer_write_bytes << ","
+        << cost.modeled_hbm_read_bytes << "," << cost.q8k8_energy_nj << ","
+        << cost.p8v8_energy_nj << "," << cost.q8k2_lut_energy_nj << ","
+        << cost.p8v2_lut_energy_nj << "," << cost.scale_energy_nj << ","
+        << cost.vadd_energy_nj << "," << cost.local_buffer_energy_nj << ","
+        << cost.hbm_read_energy_nj << ","
+        << cost.communication_energy_nj << "," << cost.reducer_energy_nj
+        << "," << cost.dynamic_energy_nj << ","
+        << cost.leakage_power_all_on_w << ","
+        << cost.leakage_power_activity_gated_w << ","
+        << cost.leakage_energy_nj << "," << cost.total_energy_nj << ","
+        << cost.average_power_w << "," << cost.peak_dynamic_power_w << ","
+        << cost.peak_total_power_w << ","
+        << cost.energy_delay_product_j_s << "\n";
+  }
+}
+
+void WriteCostAggregateCSV(const std::string& path,
+                           const std::vector<QueryResult>& results,
+                           const SimulationConfig& config,
+                           const HardwareCostMetrics& hardware) {
+  using GroupKey =
+      std::tuple<std::string, std::string, std::string, std::string,
+                 std::string, std::string, std::string, int>;
+  std::map<GroupKey, std::vector<QueryCostMetrics>> groups;
+  for (const auto& result : results) {
+    if (!IsPIMBaseline(result.baseline)) {
+      continue;
+    }
+    const GroupKey key{result.workload,
+                       result.dataset,
+                       result.split,
+                       result.evaluation_role,
+                       result.graph_compute_placement,
+                       result.kv_storage_placement,
+                       result.baseline,
+                       result.memory_token_tile};
+    groups[key].push_back(CalculateQueryCost(result, config, hardware));
+  }
+
+  PrepareCSV(path);
+  std::ofstream csv(path);
+  if (!csv.is_open()) {
+    throw std::runtime_error("Cannot open aggregate cost CSV: " + path);
+  }
+  csv << "workload,dataset,split,evaluation_role,graph_compute_placement,"
+         "kv_storage_placement,baseline,memory_token_tile,num_queries,"
+         "calibration_label,technology_nm,frequency_mhz,"
+         "total_incremental_area_mm2,mean_dynamic_energy_nj,"
+         "mean_leakage_energy_nj,mean_total_energy_nj,p50_total_energy_nj,"
+         "p95_total_energy_nj,mean_average_power_w,p50_average_power_w,"
+         "p95_average_power_w,mean_peak_dynamic_power_w,"
+         "mean_peak_total_power_w,mean_hbm_read_energy_nj,"
+         "mean_local_buffer_energy_nj,mean_communication_energy_nj,"
+         "mean_reducer_energy_nj,mean_energy_delay_product_j_s\n";
+  csv << std::fixed << std::setprecision(6);
+  for (const auto& entry : groups) {
+    std::vector<double> dynamic_energy;
+    std::vector<double> leakage_energy;
+    std::vector<double> total_energy;
+    std::vector<double> average_power;
+    std::vector<double> peak_dynamic_power;
+    std::vector<double> peak_total_power;
+    std::vector<double> hbm_energy;
+    std::vector<double> buffer_energy;
+    std::vector<double> communication_energy;
+    std::vector<double> reducer_energy;
+    std::vector<double> edp;
+    for (const auto& metric : entry.second) {
+      dynamic_energy.push_back(metric.dynamic_energy_nj);
+      leakage_energy.push_back(metric.leakage_energy_nj);
+      total_energy.push_back(metric.total_energy_nj);
+      average_power.push_back(metric.average_power_w);
+      peak_dynamic_power.push_back(metric.peak_dynamic_power_w);
+      peak_total_power.push_back(metric.peak_total_power_w);
+      hbm_energy.push_back(metric.hbm_read_energy_nj);
+      buffer_energy.push_back(metric.local_buffer_energy_nj);
+      communication_energy.push_back(metric.communication_energy_nj);
+      reducer_energy.push_back(metric.reducer_energy_nj);
+      edp.push_back(metric.energy_delay_product_j_s);
+    }
+    csv << std::get<0>(entry.first) << "," << std::get<1>(entry.first)
+        << "," << std::get<2>(entry.first) << ","
+        << std::get<3>(entry.first) << "," << std::get<4>(entry.first)
+        << "," << std::get<5>(entry.first) << ","
+        << std::get<6>(entry.first) << "," << std::get<7>(entry.first)
+        << "," << entry.second.size() << ","
+        << config.cost.calibration_label << "," << config.cost.technology_nm
+        << "," << config.cost.frequency_mhz << ","
+        << hardware.total_incremental_area_mm2 << ","
+        << Mean(dynamic_energy) << "," << Mean(leakage_energy) << ","
+        << Mean(total_energy) << "," << Percentile(total_energy, 0.50)
+        << "," << Percentile(total_energy, 0.95) << ","
+        << Mean(average_power) << "," << Percentile(average_power, 0.50)
+        << "," << Percentile(average_power, 0.95) << ","
+        << Mean(peak_dynamic_power) << "," << Mean(peak_total_power) << ","
+        << Mean(hbm_energy) << "," << Mean(buffer_energy) << ","
+        << Mean(communication_energy) << "," << Mean(reducer_energy) << ","
+        << Mean(edp) << "\n";
+  }
+}
+
 void PrintSummary(const SimulationConfig& config,
                   const std::vector<QueryResult>& results) {
   const bool validation_only =
@@ -4086,6 +4779,23 @@ void PrintSummary(const SimulationConfig& config,
   }
   std::cout << "per_query_csv=" << config.output.per_query_csv << "\n";
   std::cout << "aggregate_csv=" << config.output.aggregate_csv << "\n";
+  if (config.cost.enabled) {
+    const HardwareCostMetrics hardware = CalculateHardwareCost(config);
+    std::cout << "cost_model_area_mm2=" << std::fixed
+              << std::setprecision(3)
+              << hardware.total_incremental_area_mm2
+              << ", local_buffer_total_mib="
+              << hardware.local_buffer_total_mib
+              << ", all_on_leakage_power_w="
+              << hardware.all_on_leakage_power_w
+              << ", calibration=" << config.cost.calibration_label << "\n";
+    std::cout << "hardware_cost_csv="
+              << config.output.hardware_cost_csv << "\n";
+    std::cout << "cost_per_query_csv="
+              << config.output.cost_per_query_csv << "\n";
+    std::cout << "cost_aggregate_csv="
+              << config.output.cost_aggregate_csv << "\n";
+  }
 }
 
 }  // namespace
@@ -4125,6 +4835,14 @@ int RunAnalyticalPIM(const std::string& config_path,
     }
     WritePerQueryCSV(config.output.per_query_csv, results);
     WriteAggregateCSV(config.output.aggregate_csv, results, config);
+    if (config.cost.enabled) {
+      const HardwareCostMetrics hardware = CalculateHardwareCost(config);
+      WriteHardwareCostCSV(config.output.hardware_cost_csv, config, hardware);
+      WriteCostPerQueryCSV(config.output.cost_per_query_csv, results, config,
+                           hardware);
+      WriteCostAggregateCSV(config.output.cost_aggregate_csv, results, config,
+                            hardware);
+    }
     PrintSummary(config, results);
   } catch (const std::exception& ex) {
     std::cerr << "ERROR: " << ex.what() << std::endl;
