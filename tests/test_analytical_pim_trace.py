@@ -84,8 +84,8 @@ def check_valid_run(binary: Path) -> None:
         aggregate = load_rows(directory / "aggregate.csv")
         assert len(per_query) == 32
         assert len(aggregate) == 32
-        assert len(per_query[0]) == 198
-        assert len(aggregate[0]) == 183
+        assert len(per_query[0]) == 222
+        assert len(aggregate[0]) == 205
         assert all(
             None not in row and all(value is not None for value in row.values())
             for row in per_query
@@ -104,6 +104,21 @@ def check_valid_run(binary: Path) -> None:
         assert not any(row["baseline"].startswith("h100") for row in aggregate)
 
         required_columns = {
+            "topology_num_stacks",
+            "topology_banks_per_stack",
+            "topology_banks_per_pseudo_channel",
+            "topology_total_banks",
+            "topology_sid_count",
+            "active_stacks",
+            "edge_active_stacks",
+            "edge_active_sid_domains",
+            "selected_kv_active_stacks",
+            "selected_kv_active_sid_domains",
+            "pc_to_global_critical_stack_bytes",
+            "global_to_npu_critical_stack_bytes",
+            "global_reducer_critical_stack_input_groups",
+            "cross_stack_duplicate_output_groups",
+            "cross_stack_merge_cycles",
             "runtime_query_index",
             "target_node_count",
             "question_node_count",

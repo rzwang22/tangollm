@@ -42,11 +42,24 @@ constexpr const char* kKVPlacementHash = "hash";
 constexpr const char* kKVPlacementBalanced = "balanced";
 
 struct TopologyConfig {
+  std::string memory_standard = "hbm3_like";
+  bool explicit_sid_addressing = false;
   int num_stacks = 1;
+  int dies_per_stack = 0;
   int channels_per_stack = 8;
   int pseudo_channels_per_channel = 2;
+  int sid_count = 1;
+  int banks_per_sid_per_pseudo_channel = 16;
   int banks_per_pseudo_channel = 16;
   int pe_per_bank = 1;
+
+  int pseudo_channels_per_stack() const {
+    return channels_per_stack * pseudo_channels_per_channel;
+  }
+
+  int banks_per_stack() const {
+    return pseudo_channels_per_stack() * banks_per_pseudo_channel;
+  }
 
   int total_pseudo_channels() const {
     return num_stacks * channels_per_stack * pseudo_channels_per_channel;
@@ -58,6 +71,27 @@ struct TopologyConfig {
 
   int bank_to_pseudo_channel(int bank) const {
     return bank / banks_per_pseudo_channel;
+  }
+
+  int bank_to_stack(int bank) const {
+    return bank / banks_per_stack();
+  }
+
+  int pseudo_channel_to_stack(int pseudo_channel) const {
+    return pseudo_channel / pseudo_channels_per_stack();
+  }
+
+  int bank_to_sid(int bank) const {
+    return (bank % banks_per_pseudo_channel) /
+           banks_per_sid_per_pseudo_channel;
+  }
+
+  int bank_to_bank_address(int bank) const {
+    return bank % banks_per_sid_per_pseudo_channel;
+  }
+
+  int bank_to_sid_domain(int bank) const {
+    return bank_to_pseudo_channel(bank) * sid_count + bank_to_sid(bank);
   }
 };
 
@@ -161,6 +195,8 @@ struct CommunicationConfig {
   double pc_to_global_bandwidth_bytes_per_cycle_per_pc = 64.0;
   double pc_to_global_startup_cycles = 32.0;
   double global_to_npu_bandwidth_bytes_per_cycle = 256.0;
+  double global_to_npu_bandwidth_bytes_per_cycle_per_stack = 256.0;
+  double global_to_npu_aggregate_bandwidth_bytes_per_cycle = 256.0;
   double global_to_npu_startup_cycles = 32.0;
 };
 
@@ -174,6 +210,8 @@ struct ReducerConfig {
   double global_throughput_groups_per_cycle_per_lane = 1.0;
   double global_input_bandwidth_bytes_per_cycle = 1024.0;
   int global_concurrent_destination_groups = 256;
+  int cross_stack_merge_lanes = 64;
+  double cross_stack_merge_throughput_groups_per_cycle_per_lane = 1.0;
 };
 
 struct OutputConfig {
@@ -281,6 +319,8 @@ struct PlacementValidation {
   double mapping_difference_ratio_vs_hash = 0.0;
   double edge_active_banks = 0.0;
   double edge_active_pseudo_channels = 0.0;
+  double edge_active_stacks = 0.0;
+  double edge_active_sid_domains = 0.0;
   double bank_edge_count_mean = 0.0;
   double bank_edge_count_p50 = 0.0;
   double bank_edge_count_p95 = 0.0;
@@ -289,12 +329,19 @@ struct PlacementValidation {
   double pc_edge_count_p50 = 0.0;
   double pc_edge_count_p95 = 0.0;
   double pc_edge_count_max = 0.0;
+  double stack_edge_count_mean = 0.0;
+  double stack_edge_count_p95 = 0.0;
+  double stack_edge_count_max = 0.0;
+  double stack_imbalance = 0.0;
+  double sid_domain_imbalance = 0.0;
   double sharded_destination_count = 0.0;
   double total_destination_shards = 0.0;
   double average_shards_per_destination = 0.0;
   double max_shards_per_destination = 0.0;
   std::string active_bank_histogram;
   std::string active_pc_histogram;
+  std::string active_stack_histogram;
+  std::string active_sid_domain_histogram;
 };
 
 struct SimulationConfig {
@@ -336,11 +383,15 @@ struct Diagnosis {
 
 struct KVPlacementDiagnosis {
   double active_banks = 0.0;
+  double active_stacks = 0.0;
+  double active_sid_domains = 0.0;
   double items_per_bank_mean = 0.0;
   double items_per_bank_p95 = 0.0;
   double items_per_bank_max = 0.0;
   double bank_imbalance = 0.0;
   double bank_collision_ratio = 0.0;
+  double stack_imbalance = 0.0;
+  double sid_domain_imbalance = 0.0;
 };
 
 struct QueryResult {
@@ -467,11 +518,16 @@ struct QueryResult {
   double bank_to_pc_critical_pc_bytes = 0.0;
   double pc_to_global_total_bytes = 0.0;
   double pc_to_global_critical_pc_bytes = 0.0;
+  double pc_to_global_critical_stack_bytes = 0.0;
   double global_to_npu_bytes = 0.0;
+  double global_to_npu_critical_stack_bytes = 0.0;
   double pc_reducer_input_groups = 0.0;
   double pc_reducer_output_groups = 0.0;
   double global_reducer_input_groups = 0.0;
   double global_reducer_output_groups = 0.0;
+  double global_reducer_critical_stack_input_groups = 0.0;
+  double cross_stack_duplicate_output_groups = 0.0;
+  double cross_stack_merge_cycles = 0.0;
   double critical_path_cycles = 0.0;
   double critical_path_latency_ns = 0.0;
   double traffic_stall_fraction = 0.0;
@@ -484,6 +540,12 @@ struct QueryResult {
   double reducer_utilization = 0.0;
   int active_banks = 0;
   int active_pseudo_channels = 0;
+  int active_stacks = 0;
+  int topology_num_stacks = 0;
+  int topology_banks_per_stack = 0;
+  int topology_banks_per_pseudo_channel = 0;
+  int topology_total_banks = 0;
+  int topology_sid_count = 0;
   int score_bottleneck_bank = -1;
   int message_bottleneck_bank = -1;
   int cached_kv_bottleneck_bank = -1;
@@ -562,8 +624,18 @@ double Percentile(std::vector<double> values, double percentile) {
 void ValidateTopology(const TopologyConfig& topology) {
   if (topology.num_stacks <= 0 || topology.channels_per_stack <= 0 ||
       topology.pseudo_channels_per_channel <= 0 ||
-      topology.banks_per_pseudo_channel <= 0 || topology.pe_per_bank <= 0) {
-    throw std::runtime_error("Invalid HBM3 logical topology");
+      topology.sid_count <= 0 ||
+      topology.banks_per_sid_per_pseudo_channel <= 0 ||
+      topology.banks_per_pseudo_channel <= 0 || topology.pe_per_bank <= 0 ||
+      topology.banks_per_pseudo_channel !=
+          topology.sid_count *
+              topology.banks_per_sid_per_pseudo_channel) {
+    throw std::runtime_error("Invalid logical HBM topology");
+  }
+  if (topology.explicit_sid_addressing &&
+      (topology.memory_standard != "hbm2e" ||
+       topology.dies_per_stack <= 0)) {
+    throw std::runtime_error("Invalid explicit HBM2E SID topology");
   }
 }
 
@@ -606,15 +678,47 @@ SimulationConfig LoadConfig(const std::string& config_path) {
   config.workload_mode =
       ReadScalar<std::string>(root["workload"], "mode", "synthetic");
 
-  const YAML::Node hbm = root["hbm3"];
-  config.topology.num_stacks = ReadScalar<int>(hbm, "num_stacks", 1);
-  config.topology.channels_per_stack =
-      ReadScalar<int>(hbm, "channels_per_stack", 8);
-  config.topology.pseudo_channels_per_channel =
-      ReadScalar<int>(hbm, "pseudo_channels_per_channel", 2);
-  config.topology.banks_per_pseudo_channel =
-      ReadScalar<int>(hbm, "banks_per_pseudo_channel", 16);
-  config.topology.pe_per_bank = ReadScalar<int>(hbm, "pe_per_bank", 1);
+  const YAML::Node hbm2e = root["hbm2e"];
+  const YAML::Node hbm3 = root["hbm3"];
+  if (hbm2e) {
+    config.topology.memory_standard = "hbm2e";
+    config.topology.explicit_sid_addressing = true;
+    config.topology.num_stacks =
+        ReadScalar<int>(hbm2e, "num_stacks", 1);
+    config.topology.dies_per_stack =
+        ReadScalar<int>(hbm2e, "dies_per_stack", 8);
+    config.topology.channels_per_stack =
+        ReadScalar<int>(hbm2e, "channels_per_stack", 8);
+    config.topology.pseudo_channels_per_channel =
+        ReadScalar<int>(hbm2e, "pseudo_channels_per_channel", 2);
+    config.topology.sid_count = ReadScalar<int>(hbm2e, "sid_count", 2);
+    config.topology.banks_per_sid_per_pseudo_channel = ReadScalar<int>(
+        hbm2e, "banks_per_sid_per_pseudo_channel", 16);
+    config.topology.banks_per_pseudo_channel =
+        config.topology.sid_count *
+        config.topology.banks_per_sid_per_pseudo_channel;
+    if (hbm2e["banks_per_pseudo_channel"] &&
+        hbm2e["banks_per_pseudo_channel"].as<int>() !=
+            config.topology.banks_per_pseudo_channel) {
+      throw std::runtime_error(
+          "HBM2E banks_per_pseudo_channel must equal sid_count * "
+          "banks_per_sid_per_pseudo_channel");
+    }
+    config.topology.pe_per_bank =
+        ReadScalar<int>(hbm2e, "pe_per_bank", 1);
+  } else {
+    config.topology.num_stacks = ReadScalar<int>(hbm3, "num_stacks", 1);
+    config.topology.channels_per_stack =
+        ReadScalar<int>(hbm3, "channels_per_stack", 8);
+    config.topology.pseudo_channels_per_channel =
+        ReadScalar<int>(hbm3, "pseudo_channels_per_channel", 2);
+    config.topology.banks_per_pseudo_channel =
+        ReadScalar<int>(hbm3, "banks_per_pseudo_channel", 16);
+    config.topology.sid_count = 1;
+    config.topology.banks_per_sid_per_pseudo_channel =
+        config.topology.banks_per_pseudo_channel;
+    config.topology.pe_per_bank = ReadScalar<int>(hbm3, "pe_per_bank", 1);
+  }
   ValidateTopology(config.topology);
 
   const YAML::Node pe = root["near_bank_pe"];
@@ -814,6 +918,22 @@ SimulationConfig LoadConfig(const std::string& config_path) {
   config.communication.global_to_npu_bandwidth_bytes_per_cycle =
       ReadScalar<double>(communication,
                          "global_to_npu_bandwidth_bytes_per_cycle", 256.0);
+  config.communication.global_to_npu_bandwidth_bytes_per_cycle_per_stack =
+      ReadScalar<double>(
+          communication,
+          "global_to_npu_bandwidth_bytes_per_cycle_per_stack",
+          config.communication.global_to_npu_bandwidth_bytes_per_cycle);
+  const double default_aggregate_global_to_npu_bandwidth =
+      communication && communication["global_to_npu_bandwidth_bytes_per_cycle"]
+          ? config.communication.global_to_npu_bandwidth_bytes_per_cycle
+          : config.communication
+                    .global_to_npu_bandwidth_bytes_per_cycle_per_stack *
+                config.topology.num_stacks;
+  config.communication.global_to_npu_aggregate_bandwidth_bytes_per_cycle =
+      ReadScalar<double>(
+          communication,
+          "global_to_npu_aggregate_bandwidth_bytes_per_cycle",
+          default_aggregate_global_to_npu_bandwidth);
   config.communication.global_to_npu_startup_cycles = ReadScalar<double>(
       communication, "global_to_npu_startup_cycles", 32.0);
 
@@ -827,17 +947,26 @@ SimulationConfig LoadConfig(const std::string& config_path) {
       reducer, "pc_input_bandwidth_bytes_per_cycle", 512.0);
   config.reducer.pc_concurrent_destination_groups = ReadScalar<int>(
       reducer, "pc_concurrent_destination_groups", 64);
-  config.reducer.global_units =
-      ReadScalar<int>(reducer, "global_units", 1);
+  config.reducer.global_units = ReadScalar<int>(
+      reducer, "global_units_per_stack",
+      ReadScalar<int>(reducer, "global_units", 1));
   config.reducer.global_lanes_per_unit =
       ReadScalar<int>(reducer, "global_lanes_per_unit", 64);
   config.reducer.global_throughput_groups_per_cycle_per_lane =
       ReadScalar<double>(
           reducer, "global_throughput_groups_per_cycle_per_lane", 1.0);
   config.reducer.global_input_bandwidth_bytes_per_cycle = ReadScalar<double>(
-      reducer, "global_input_bandwidth_bytes_per_cycle", 1024.0);
+      reducer, "global_input_bandwidth_bytes_per_cycle_per_stack",
+      ReadScalar<double>(reducer, "global_input_bandwidth_bytes_per_cycle",
+                         1024.0));
   config.reducer.global_concurrent_destination_groups = ReadScalar<int>(
       reducer, "global_concurrent_destination_groups", 256);
+  config.reducer.cross_stack_merge_lanes =
+      ReadScalar<int>(reducer, "cross_stack_merge_lanes", 64);
+  config.reducer.cross_stack_merge_throughput_groups_per_cycle_per_lane =
+      ReadScalar<double>(
+          reducer,
+          "cross_stack_merge_throughput_groups_per_cycle_per_lane", 1.0);
 
   auto placements = ReadStringVector(root["graph_compute_placement_sweep"]);
   if (placements.empty()) {
@@ -910,6 +1039,12 @@ SimulationConfig LoadConfig(const std::string& config_path) {
       config.communication.pc_to_global_bandwidth_bytes_per_cycle_per_pc <=
           0.0 ||
       config.communication.global_to_npu_bandwidth_bytes_per_cycle <= 0.0 ||
+      config.communication
+              .global_to_npu_bandwidth_bytes_per_cycle_per_stack <=
+          0.0 ||
+      config.communication
+              .global_to_npu_aggregate_bandwidth_bytes_per_cycle <=
+          0.0 ||
       config.communication.q_broadcast_startup_cycles < 0.0 ||
       config.communication.bank_to_pc_startup_cycles < 0.0 ||
       config.communication.pc_to_global_startup_cycles < 0.0 ||
@@ -922,7 +1057,11 @@ SimulationConfig LoadConfig(const std::string& config_path) {
       config.reducer.global_lanes_per_unit <= 0 ||
       config.reducer.global_throughput_groups_per_cycle_per_lane <= 0.0 ||
       config.reducer.global_input_bandwidth_bytes_per_cycle <= 0.0 ||
-      config.reducer.global_concurrent_destination_groups <= 0) {
+      config.reducer.global_concurrent_destination_groups <= 0 ||
+      config.reducer.cross_stack_merge_lanes <= 0 ||
+      config.reducer
+              .cross_stack_merge_throughput_groups_per_cycle_per_lane <=
+          0.0) {
     throw std::runtime_error("Invalid analytical PIM config");
   }
   for (const auto& workload : config.suite.workloads) {
@@ -1055,8 +1194,12 @@ void ApplyConfigOverrides(SimulationConfig& config,
       {"communication.pc_to_global_bandwidth_bytes_per_cycle_per_pc",
        &config.communication
             .pc_to_global_bandwidth_bytes_per_cycle_per_pc},
-      {"communication.global_to_npu_bandwidth_bytes_per_cycle",
-       &config.communication.global_to_npu_bandwidth_bytes_per_cycle},
+      {"communication.global_to_npu_bandwidth_bytes_per_cycle_per_stack",
+       &config.communication
+            .global_to_npu_bandwidth_bytes_per_cycle_per_stack},
+      {"communication.global_to_npu_aggregate_bandwidth_bytes_per_cycle",
+       &config.communication
+            .global_to_npu_aggregate_bandwidth_bytes_per_cycle},
       {"reducer.pc_throughput_groups_per_cycle_per_lane",
        &config.reducer.pc_throughput_groups_per_cycle_per_lane},
       {"reducer.pc_input_bandwidth_bytes_per_cycle",
@@ -1064,6 +1207,8 @@ void ApplyConfigOverrides(SimulationConfig& config,
       {"reducer.global_throughput_groups_per_cycle_per_lane",
        &config.reducer.global_throughput_groups_per_cycle_per_lane},
       {"reducer.global_input_bandwidth_bytes_per_cycle",
+       &config.reducer.global_input_bandwidth_bytes_per_cycle},
+      {"reducer.global_input_bandwidth_bytes_per_cycle_per_stack",
        &config.reducer.global_input_bandwidth_bytes_per_cycle},
   };
   for (const auto& override_value : overrides) {
@@ -1078,6 +1223,15 @@ void ApplyConfigOverrides(SimulationConfig& config,
     const auto numeric = numeric_fields.find(key);
     if (numeric != numeric_fields.end()) {
       *numeric->second = ParsePositiveOverride(key, value);
+    } else if (key ==
+               "communication.global_to_npu_bandwidth_bytes_per_cycle") {
+      const double bandwidth = ParsePositiveOverride(key, value);
+      config.communication.global_to_npu_bandwidth_bytes_per_cycle =
+          bandwidth;
+      config.communication
+          .global_to_npu_bandwidth_bytes_per_cycle_per_stack = bandwidth;
+      config.communication.global_to_npu_aggregate_bandwidth_bytes_per_cycle =
+          bandwidth;
     } else if (key == "near_bank_pe.cached_kv_lut_scale_overlap") {
       config.pe.cached_kv_lut_scale_overlap =
           ParseUnitIntervalOverride(key, value);
@@ -1111,6 +1265,21 @@ void ApplyConfigOverrides(SimulationConfig& config,
 void PrintSanityCheck(const SimulationConfig& config) {
   const int groups_per_head = GroupsPerHead(config);
   std::cout << "Analytical model sanity check\n";
+  std::cout << "memory_topology=" << config.topology.memory_standard
+            << ", stacks=" << config.topology.num_stacks
+            << ", dies_per_stack=" << config.topology.dies_per_stack
+            << ", channels_per_stack="
+            << config.topology.channels_per_stack
+            << ", pseudo_channels_per_channel="
+            << config.topology.pseudo_channels_per_channel
+            << ", sid_count=" << config.topology.sid_count
+            << ", banks_per_sid_per_pseudo_channel="
+            << config.topology.banks_per_sid_per_pseudo_channel
+            << ", banks_per_pseudo_channel="
+            << config.topology.banks_per_pseudo_channel
+            << ", banks_per_stack=" << config.topology.banks_per_stack()
+            << ", total_banks=" << config.topology.total_banks()
+            << ", pe_per_bank=" << config.topology.pe_per_bank << "\n";
   std::cout << "memory_tokens=" << config.model.memory_tokens
             << ", hidden_dim=" << config.model.hidden_dim
             << ", gnn_heads=" << config.model.gnn_heads
@@ -1165,18 +1334,25 @@ void PrintSanityCheck(const SimulationConfig& config) {
             << ", pc_to_global_per_pc="
             << config.communication
                    .pc_to_global_bandwidth_bytes_per_cycle_per_pc
-            << ", global_to_npu="
-            << config.communication.global_to_npu_bandwidth_bytes_per_cycle
+            << ", global_to_npu_per_stack="
+            << config.communication
+                   .global_to_npu_bandwidth_bytes_per_cycle_per_stack
+            << ", global_to_npu_aggregate="
+            << config.communication
+                   .global_to_npu_aggregate_bandwidth_bytes_per_cycle
             << "\n";
   std::cout << "reducer: pc_lanes="
             << config.reducer.pc_lanes_per_pseudo_channel
             << ", pc_input_bytes_per_cycle="
             << config.reducer.pc_input_bandwidth_bytes_per_cycle
-            << ", global_units=" << config.reducer.global_units
+            << ", global_units_per_stack=" << config.reducer.global_units
             << ", global_lanes_per_unit="
             << config.reducer.global_lanes_per_unit
-            << ", global_input_bytes_per_cycle="
-            << config.reducer.global_input_bandwidth_bytes_per_cycle << "\n";
+            << ", global_input_bytes_per_cycle_per_stack="
+            << config.reducer.global_input_bandwidth_bytes_per_cycle
+            << ", global_scope=per_stack"
+            << ", cross_stack_merge_lanes="
+            << config.reducer.cross_stack_merge_lanes << "\n";
   std::cout << "workload_mode=" << config.workload_mode;
   if (config.workload_mode == "trace") {
     std::cout << ", trace_root=" << config.trace.loader.root
@@ -1598,6 +1774,33 @@ int NodeBankHash(int node, const SimulationConfig& config) {
   return DeterministicHash(node, config.suite.seed, config.topology.total_banks());
 }
 
+std::vector<int> BalancedBankOrder(const TopologyConfig& topology) {
+  std::vector<int> order;
+  order.reserve(topology.total_banks());
+  if (!topology.explicit_sid_addressing) {
+    order.resize(topology.total_banks());
+    std::iota(order.begin(), order.end(), 0);
+    return order;
+  }
+  for (int bank_address = 0;
+       bank_address < topology.banks_per_sid_per_pseudo_channel;
+       ++bank_address) {
+    for (int local_pc = 0; local_pc < topology.pseudo_channels_per_stack();
+         ++local_pc) {
+      for (int sid = 0; sid < topology.sid_count; ++sid) {
+        for (int stack = 0; stack < topology.num_stacks; ++stack) {
+          order.push_back(
+              stack * topology.banks_per_stack() +
+              local_pc * topology.banks_per_pseudo_channel +
+              sid * topology.banks_per_sid_per_pseudo_channel +
+              bank_address);
+        }
+      }
+    }
+  }
+  return order;
+}
+
 GraphSanity DiagnoseGraph(const QuerySample& query,
                           const SimulationConfig& config) {
   GraphSanity sanity;
@@ -1683,11 +1886,16 @@ PlacementValidation ValidatePlacement(const QuerySample& query,
   PlacementValidation validation;
   std::vector<int> bank_counts(config.topology.total_banks(), 0);
   std::vector<int> pc_counts(config.topology.total_pseudo_channels(), 0);
+  std::vector<int> stack_counts(config.topology.num_stacks, 0);
+  std::vector<int> sid_domain_counts(
+      config.topology.total_pseudo_channels() * config.topology.sid_count, 0);
   std::map<int, std::set<int>> destination_banks;
   int changed_from_hash = 0;
   for (const auto& edge : query.edges) {
     bank_counts[edge.bank]++;
     pc_counts[edge.pseudo_channel]++;
+    stack_counts[config.topology.bank_to_stack(edge.bank)]++;
+    sid_domain_counts[config.topology.bank_to_sid_domain(edge.bank)]++;
     destination_banks[edge.dst].insert(edge.bank);
     if (edge.bank != NodeBankHash(edge.src, config)) {
       changed_from_hash++;
@@ -1697,9 +1905,14 @@ PlacementValidation ValidatePlacement(const QuerySample& query,
       query.edges.empty() ? 0.0 : 1.0 * changed_from_hash / query.edges.size();
   validation.active_bank_histogram = FormatActiveHistogram(bank_counts);
   validation.active_pc_histogram = FormatActiveHistogram(pc_counts);
+  validation.active_stack_histogram = FormatActiveHistogram(stack_counts);
+  validation.active_sid_domain_histogram =
+      FormatActiveHistogram(sid_domain_counts);
 
   std::vector<double> active_bank_counts;
   std::vector<double> active_pc_counts;
+  std::vector<double> active_stack_counts;
+  std::vector<double> active_sid_domain_counts;
   for (int count : bank_counts) {
     if (count > 0) {
       active_bank_counts.push_back(count);
@@ -1710,8 +1923,20 @@ PlacementValidation ValidatePlacement(const QuerySample& query,
       active_pc_counts.push_back(count);
     }
   }
+  for (int count : stack_counts) {
+    if (count > 0) {
+      active_stack_counts.push_back(count);
+    }
+  }
+  for (int count : sid_domain_counts) {
+    if (count > 0) {
+      active_sid_domain_counts.push_back(count);
+    }
+  }
   validation.edge_active_banks = active_bank_counts.size();
   validation.edge_active_pseudo_channels = active_pc_counts.size();
+  validation.edge_active_stacks = active_stack_counts.size();
+  validation.edge_active_sid_domains = active_sid_domain_counts.size();
   validation.bank_edge_count_mean = Mean(active_bank_counts);
   validation.bank_edge_count_p50 = Percentile(active_bank_counts, 0.50);
   validation.bank_edge_count_p95 = Percentile(active_bank_counts, 0.95);
@@ -1727,6 +1952,25 @@ PlacementValidation ValidatePlacement(const QuerySample& query,
       active_pc_counts.empty()
           ? 0.0
           : *std::max_element(active_pc_counts.begin(), active_pc_counts.end());
+  validation.stack_edge_count_mean = Mean(active_stack_counts);
+  validation.stack_edge_count_p95 = Percentile(active_stack_counts, 0.95);
+  validation.stack_edge_count_max =
+      active_stack_counts.empty()
+          ? 0.0
+          : *std::max_element(active_stack_counts.begin(),
+                              active_stack_counts.end());
+  validation.stack_imbalance =
+      validation.stack_edge_count_mean == 0.0
+          ? 0.0
+          : validation.stack_edge_count_max /
+                validation.stack_edge_count_mean;
+  const double sid_domain_mean = Mean(active_sid_domain_counts);
+  validation.sid_domain_imbalance =
+      sid_domain_mean == 0.0
+          ? 0.0
+          : *std::max_element(active_sid_domain_counts.begin(),
+                              active_sid_domain_counts.end()) /
+                sid_domain_mean;
 
   std::vector<double> shards_per_destination;
   for (const auto& item : destination_banks) {
@@ -1753,10 +1997,11 @@ std::map<int, int> BuildDegreeBalancedNodePlacement(
     return query.node_degree[lhs] > query.node_degree[rhs];
   });
   std::vector<int> bank_load(config.topology.total_banks(), 0);
+  const std::vector<int> bank_order = BalancedBankOrder(config.topology);
   std::map<int, int> node_to_bank;
   for (int node : nodes) {
-    int best_bank = 0;
-    for (int bank = 1; bank < config.topology.total_banks(); ++bank) {
+    int best_bank = bank_order.front();
+    for (int bank : bank_order) {
       if (bank_load[bank] < bank_load[best_bank]) {
         best_bank = bank;
       }
@@ -1920,9 +2165,10 @@ KVBankPlacement PlaceKVItems(const QuerySample& query,
                                   : lhs_work > rhs_work;
     });
     std::vector<double> bank_work(total_banks, 0.0);
+    const std::vector<int> bank_order = BalancedBankOrder(config.topology);
     for (size_t item_position : order) {
-      int best_bank = 0;
-      for (int bank = 1; bank < total_banks; ++bank) {
+      int best_bank = bank_order.front();
+      for (int bank : bank_order) {
         if (bank_work[bank] < bank_work[best_bank]) {
           best_bank = bank;
         }
@@ -1968,18 +2214,41 @@ KVBankPlacement PlaceKVItems(const QuerySample& query,
 }
 
 KVPlacementDiagnosis DiagnoseKVPlacement(
-    const std::vector<int>& selected_count_by_bank) {
+    const std::vector<int>& selected_count_by_bank,
+    const TopologyConfig& topology) {
   KVPlacementDiagnosis diagnosis;
   std::vector<double> active_counts;
+  std::vector<int> stack_counts(topology.num_stacks, 0);
+  std::vector<int> sid_domain_counts(
+      topology.total_pseudo_channels() * topology.sid_count, 0);
   int total_items = 0;
-  for (int count : selected_count_by_bank) {
+  for (size_t bank = 0; bank < selected_count_by_bank.size(); ++bank) {
+    const int count = selected_count_by_bank[bank];
     total_items += count;
     if (count > 0) {
       active_counts.push_back(count);
+      stack_counts[topology.bank_to_stack(static_cast<int>(bank))] += count;
+      sid_domain_counts[
+          topology.bank_to_sid_domain(static_cast<int>(bank))] += count;
+    }
+  }
+
+  std::vector<double> active_stack_counts;
+  std::vector<double> active_sid_domain_counts;
+  for (int count : stack_counts) {
+    if (count > 0) {
+      active_stack_counts.push_back(count);
+    }
+  }
+  for (int count : sid_domain_counts) {
+    if (count > 0) {
+      active_sid_domain_counts.push_back(count);
     }
   }
 
   diagnosis.active_banks = active_counts.size();
+  diagnosis.active_stacks = active_stack_counts.size();
+  diagnosis.active_sid_domains = active_sid_domain_counts.size();
   diagnosis.items_per_bank_mean = Mean(active_counts);
   diagnosis.items_per_bank_p95 = Percentile(active_counts, 0.95);
   diagnosis.items_per_bank_max =
@@ -1994,6 +2263,20 @@ KVPlacementDiagnosis DiagnoseKVPlacement(
       total_items == 0
           ? 0.0
           : 1.0 * (total_items - active_counts.size()) / total_items;
+  const double stack_mean = Mean(active_stack_counts);
+  diagnosis.stack_imbalance =
+      stack_mean == 0.0
+          ? 0.0
+          : *std::max_element(active_stack_counts.begin(),
+                              active_stack_counts.end()) /
+                stack_mean;
+  const double sid_domain_mean = Mean(active_sid_domain_counts);
+  diagnosis.sid_domain_imbalance =
+      sid_domain_mean == 0.0
+          ? 0.0
+          : *std::max_element(active_sid_domain_counts.begin(),
+                              active_sid_domain_counts.end()) /
+                sid_domain_mean;
   return diagnosis;
 }
 
@@ -2104,11 +2387,14 @@ QueryResult SimulateQuery(const SimulationConfig& config,
 
   std::set<int> active_banks;
   std::set<int> active_pcs;
+  std::set<int> active_stacks;
   std::vector<int> edge_count_by_bank(config.topology.total_banks(), 0);
   std::vector<std::set<int>> destinations_by_bank(
       config.topology.total_banks());
   std::vector<std::set<int>> destinations_by_pc(
       config.topology.total_pseudo_channels());
+  std::vector<std::set<int>> destinations_by_stack(
+      config.topology.num_stacks);
   std::set<int> global_destinations;
   const KVBankPlacement kv_bank_placement =
       PlaceKVItems(query, config, graph_placement, kv_placement);
@@ -2117,15 +2403,19 @@ QueryResult SimulateQuery(const SimulationConfig& config,
   for (const auto& edge : query.edges) {
     active_banks.insert(edge.bank);
     active_pcs.insert(edge.pseudo_channel);
+    active_stacks.insert(config.topology.bank_to_stack(edge.bank));
     edge_count_by_bank[edge.bank]++;
     destinations_by_bank[edge.bank].insert(edge.dst);
     destinations_by_pc[edge.pseudo_channel].insert(edge.dst);
+    destinations_by_stack[config.topology.bank_to_stack(edge.bank)].insert(
+        edge.dst);
     global_destinations.insert(edge.dst);
   }
   for (int bank = 0; bank < config.topology.total_banks(); ++bank) {
     if (selected_count_by_bank[bank] > 0) {
       active_banks.insert(bank);
       active_pcs.insert(config.topology.bank_to_pseudo_channel(bank));
+      active_stacks.insert(config.topology.bank_to_stack(bank));
     }
   }
 
@@ -2200,11 +2490,18 @@ QueryResult SimulateQuery(const SimulationConfig& config,
   }
   result.active_banks = static_cast<int>(active_banks.size());
   result.active_pseudo_channels = static_cast<int>(active_pcs.size());
+  result.active_stacks = static_cast<int>(active_stacks.size());
+  result.topology_num_stacks = config.topology.num_stacks;
+  result.topology_banks_per_stack = config.topology.banks_per_stack();
+  result.topology_banks_per_pseudo_channel =
+      config.topology.banks_per_pseudo_channel;
+  result.topology_total_banks = config.topology.total_banks();
+  result.topology_sid_count = config.topology.sid_count;
   result.graph_sanity = DiagnoseGraph(query, config);
   result.placement_validation = ValidatePlacement(query, config);
   result.diagnosis = DiagnoseLocalCombine(query, config);
   result.kv_placement_diagnosis =
-      DiagnoseKVPlacement(selected_count_by_bank);
+      DiagnoseKVPlacement(selected_count_by_bank, config.topology);
 
   if (baseline == kH100Ideal || baseline == kH100Realistic) {
     result.h100_gnn_score_groups = score_groups;
@@ -2449,11 +2746,24 @@ QueryResult SimulateQuery(const SimulationConfig& config,
       config.topology.total_pseudo_channels(), 0.0);
   std::vector<double> pc_to_global_bytes_by_pc(
       config.topology.total_pseudo_channels(), 0.0);
+  std::vector<double> global_input_groups_by_stack(
+      config.topology.num_stacks, 0.0);
+  std::vector<double> pc_to_global_bytes_by_stack(
+      config.topology.num_stacks, 0.0);
+  std::vector<double> global_output_groups_by_stack(
+      config.topology.num_stacks, 0.0);
   for (int pc = 0; pc < config.topology.total_pseudo_channels(); ++pc) {
     pc_output_groups_by_pc[pc] =
         destinations_by_pc[pc].size() * group_multiplier;
     pc_to_global_bytes_by_pc[pc] =
         pc_output_groups_by_pc[pc] * message_bytes_per_group;
+    const int stack = config.topology.pseudo_channel_to_stack(pc);
+    global_input_groups_by_stack[stack] += pc_output_groups_by_pc[pc];
+    pc_to_global_bytes_by_stack[stack] += pc_to_global_bytes_by_pc[pc];
+  }
+  for (int stack = 0; stack < config.topology.num_stacks; ++stack) {
+    global_output_groups_by_stack[stack] =
+        destinations_by_stack[stack].size() * group_multiplier;
   }
 
   result.pc_reducer_input_groups =
@@ -2464,7 +2774,18 @@ QueryResult SimulateQuery(const SimulationConfig& config,
                       pc_output_groups_by_pc.end(), 0.0);
   result.global_reducer_input_groups = result.pc_reducer_output_groups;
   result.global_reducer_output_groups =
+      std::accumulate(global_output_groups_by_stack.begin(),
+                      global_output_groups_by_stack.end(), 0.0);
+  result.global_reducer_critical_stack_input_groups =
+      global_input_groups_by_stack.empty()
+          ? 0.0
+          : *std::max_element(global_input_groups_by_stack.begin(),
+                              global_input_groups_by_stack.end());
+  const double unique_global_output_groups =
       global_destinations.size() * group_multiplier;
+  result.cross_stack_duplicate_output_groups =
+      std::max(0.0, result.global_reducer_output_groups -
+                        unique_global_output_groups);
 
   result.q_broadcast_critical_bank_bytes =
       active_banks.empty()
@@ -2518,6 +2839,11 @@ QueryResult SimulateQuery(const SimulationConfig& config,
           ? 0.0
           : *std::max_element(pc_to_global_bytes_by_pc.begin(),
                               pc_to_global_bytes_by_pc.end());
+  result.pc_to_global_critical_stack_bytes =
+      pc_to_global_bytes_by_stack.empty()
+          ? 0.0
+          : *std::max_element(pc_to_global_bytes_by_stack.begin(),
+                              pc_to_global_bytes_by_stack.end());
   if (result.pc_to_global_total_bytes > 0.0) {
     result.pc_to_global_communication_cycles =
         num_token_tiles * query.gnn_layer_count *
@@ -2525,18 +2851,29 @@ QueryResult SimulateQuery(const SimulationConfig& config,
         std::max(result.pc_to_global_critical_pc_bytes /
                      config.communication
                          .pc_to_global_bandwidth_bytes_per_cycle_per_pc,
-                 result.pc_to_global_total_bytes /
+                 result.pc_to_global_critical_stack_bytes /
                      config.reducer.global_input_bandwidth_bytes_per_cycle);
   }
 
   result.global_to_npu_bytes =
       result.global_reducer_output_groups * message_bytes_per_group;
+  result.global_to_npu_critical_stack_bytes =
+      global_output_groups_by_stack.empty()
+          ? 0.0
+          : *std::max_element(global_output_groups_by_stack.begin(),
+                              global_output_groups_by_stack.end()) *
+                message_bytes_per_group;
   if (result.global_to_npu_bytes > 0.0) {
     result.global_to_npu_communication_cycles =
         num_token_tiles * query.gnn_layer_count *
             config.communication.global_to_npu_startup_cycles +
-        result.global_to_npu_bytes /
-            config.communication.global_to_npu_bandwidth_bytes_per_cycle;
+        std::max(
+            result.global_to_npu_critical_stack_bytes /
+                config.communication
+                    .global_to_npu_bandwidth_bytes_per_cycle_per_stack,
+            result.global_to_npu_bytes /
+                config.communication
+                    .global_to_npu_aggregate_bandwidth_bytes_per_cycle);
   }
 
   const double max_pc_input_groups =
@@ -2555,9 +2892,14 @@ QueryResult SimulateQuery(const SimulationConfig& config,
       config.reducer.global_units * config.reducer.global_lanes_per_unit,
       config.reducer.global_concurrent_destination_groups);
   result.global_reduce_cycles =
-      result.global_reducer_input_groups /
+      result.global_reducer_critical_stack_input_groups /
       (global_effective_lanes *
        config.reducer.global_throughput_groups_per_cycle_per_lane);
+  result.cross_stack_merge_cycles =
+      result.cross_stack_duplicate_output_groups /
+      (config.reducer.cross_stack_merge_lanes *
+       config.reducer
+           .cross_stack_merge_throughput_groups_per_cycle_per_lane);
 
   result.message_reduce_traffic_bytes =
       result.bank_to_pc_total_bytes + result.pc_to_global_total_bytes;
@@ -2566,7 +2908,8 @@ QueryResult SimulateQuery(const SimulationConfig& config,
   result.cached_kv_cycles = kv_cycles;
   result.compute_cycles = score_cycles + message_cycles + kv_cycles;
   result.reducer_cycles =
-      result.pc_reduce_cycles + result.global_reduce_cycles;
+      result.pc_reduce_cycles + result.global_reduce_cycles +
+      result.cross_stack_merge_cycles;
   result.communication_cycles =
       result.q_broadcast_cycles + result.bank_to_pc_communication_cycles +
       result.pc_to_global_communication_cycles +
@@ -2612,7 +2955,8 @@ QueryResult SimulateQuery(const SimulationConfig& config,
       result.reducer_cycles == 0.0
           ? 0.0
           : (result.pc_reducer_input_groups +
-             result.global_reducer_input_groups) /
+             result.global_reducer_input_groups +
+             result.cross_stack_duplicate_output_groups) /
                 (result.pc_reduce_cycles *
                      std::max(1.0,
                               result.placement_validation
@@ -2621,8 +2965,14 @@ QueryResult SimulateQuery(const SimulationConfig& config,
                      config.reducer
                          .pc_throughput_groups_per_cycle_per_lane +
                  result.global_reduce_cycles * global_effective_lanes *
+                     std::max(1.0,
+                              result.placement_validation.edge_active_stacks) *
                      config.reducer
-                         .global_throughput_groups_per_cycle_per_lane);
+                         .global_throughput_groups_per_cycle_per_lane +
+                 result.cross_stack_merge_cycles *
+                     config.reducer.cross_stack_merge_lanes *
+                     config.reducer
+                         .cross_stack_merge_throughput_groups_per_cycle_per_lane);
   std::vector<std::pair<std::string, double>> bottleneck_stages = {
       {"pim_q8k8_vdot", result.q8k8_vdot_cycles},
       {"pim_gnn_score_scale", result.gnn_score_scale_cycles},
@@ -2644,6 +2994,7 @@ QueryResult SimulateQuery(const SimulationConfig& config,
       bottleneck_stages.end(),
       {{"pim_pc_reduce", result.pc_reduce_cycles},
        {"pim_global_reduce", result.global_reduce_cycles},
+       {"pim_cross_stack_merge", result.cross_stack_merge_cycles},
        {"q_broadcast_communication", result.q_broadcast_cycles},
        {"bank_to_pc_communication",
         result.bank_to_pc_communication_cycles},
@@ -2675,6 +3026,9 @@ void WritePerQueryCSV(const std::string& path,
          "runtime_query_index,trace_query_id,trace_source_path,placement,"
          "selection_policy,"
          "graph_compute_placement,kv_storage_placement,baseline,query_id,"
+         "topology_num_stacks,topology_banks_per_stack,"
+         "topology_banks_per_pseudo_channel,topology_total_banks,"
+         "topology_sid_count,"
          "target_node,target_node_count,question_node_count,memory_token_tile,"
          "num_token_tiles,sampled_node_count,sampled_edge_count,"
          "total_item_count,node_text_item_count,edge_text_item_count,"
@@ -2693,8 +3047,10 @@ void WritePerQueryCSV(const std::string& path,
          "runtime_pv_output_elements,nog_runtime_qk_elements,"
          "nog_runtime_pv_output_elements,"
          "selected_kv_active_banks,selected_kv_items_per_bank_mean,"
+         "selected_kv_active_stacks,selected_kv_active_sid_domains,"
          "selected_kv_items_per_bank_p95,selected_kv_items_per_bank_max,"
          "selected_kv_bank_imbalance,selected_kv_bank_collision_ratio,"
+         "selected_kv_stack_imbalance,selected_kv_sid_domain_imbalance,"
          "q_broadcast_bytes,score_traffic_bytes,p_return_traffic_bytes,"
          "message_reduce_traffic_bytes,local_combine_buffer_max_bytes,"
          "local_buffer_bytes_per_group,local_buffer_bytes_per_head_tile,"
@@ -2709,7 +3065,7 @@ void WritePerQueryCSV(const std::string& path,
          "pc_reducer_buffer_max_bytes,gnn_score_cycles,gnn_message_cycles,"
          "cached_kv_cycles,reducer_cycles,scheduling_cycles,total_cycles,"
          "latency_ns,near_bank_pe_utilization,reducer_utilization,"
-         "active_banks,active_pseudo_channels,"
+         "active_banks,active_pseudo_channels,active_stacks,"
          "edge_message_count_before_local_combine,"
          "bank_local_group_count_after_combine,pc_group_count_after_pc_reduce,"
          "local_combine_reduction_ratio,pc_reduction_ratio,"
@@ -2728,7 +3084,7 @@ void WritePerQueryCSV(const std::string& path,
          "cached_kv_raw_scale_fraction,cached_kv_overlap_hidden_fraction,"
          "cached_kv_pipeline_compute_fraction,"
          "cached_kv_pipeline_critical_path_fraction,pc_reduce_cycles,"
-         "global_reduce_cycles,h100_cache_read_cycles,"
+         "global_reduce_cycles,cross_stack_merge_cycles,h100_cache_read_cycles,"
          "h100_int2_unpack_cycles,h100_scale_dequant_cycles,"
          "h100_layout_conversion_cycles,"
          "h100_irregular_gather_penalty_cycles,"
@@ -2745,13 +3101,17 @@ void WritePerQueryCSV(const std::string& path,
          "dst_degree_hist_8_15,dst_degree_hist_16_31,"
          "dst_degree_hist_32_63,dst_degree_hist_64_plus,"
          "unique_source_banks,mapping_difference_ratio_vs_hash,"
-         "edge_active_banks,edge_active_pseudo_channels,"
+         "edge_active_banks,edge_active_pseudo_channels,edge_active_stacks,"
+         "edge_active_sid_domains,"
          "bank_edge_count_mean,bank_edge_count_p50,bank_edge_count_p95,"
          "bank_edge_count_max,pc_edge_count_mean,pc_edge_count_p50,"
          "pc_edge_count_p95,pc_edge_count_max,sharded_destination_count,"
+         "stack_edge_count_mean,stack_edge_count_p95,stack_edge_count_max,"
+         "stack_imbalance,sid_domain_imbalance,"
          "total_destination_shards,average_shards_per_destination,"
          "max_shards_per_destination,active_bank_histogram,"
-         "active_pc_histogram,compute_cycles,communication_cycles,"
+         "active_pc_histogram,active_stack_histogram,"
+         "active_sid_domain_histogram,compute_cycles,communication_cycles,"
          "q_broadcast_cycles,bank_to_pc_communication_cycles,"
          "pc_to_global_communication_cycles,"
          "global_to_npu_communication_cycles,critical_path_cycles,"
@@ -2759,9 +3119,12 @@ void WritePerQueryCSV(const std::string& path,
          "q_broadcast_critical_bank_bytes,bank_to_pc_total_bytes,"
          "bank_to_pc_critical_bank_bytes,bank_to_pc_critical_pc_bytes,"
          "pc_to_global_total_bytes,pc_to_global_critical_pc_bytes,"
-         "global_to_npu_bytes,pc_reducer_input_groups,"
+         "pc_to_global_critical_stack_bytes,global_to_npu_bytes,"
+         "global_to_npu_critical_stack_bytes,pc_reducer_input_groups,"
          "pc_reducer_output_groups,global_reducer_input_groups,"
-         "global_reducer_output_groups\n";
+         "global_reducer_output_groups,"
+         "global_reducer_critical_stack_input_groups,"
+         "cross_stack_duplicate_output_groups\n";
   csv << std::fixed << std::setprecision(6);
   for (const auto& r : results) {
     const Diagnosis& d = r.diagnosis;
@@ -2774,7 +3137,11 @@ void WritePerQueryCSV(const std::string& path,
         << r.trace_source_path << "," << r.placement << ","
         << r.selection_policy << "," << r.graph_compute_placement << ","
         << r.kv_storage_placement << "," << r.baseline << "," << r.query_id
-        << "," << r.target_node << "," << r.target_node_count << ","
+        << "," << r.topology_num_stacks << ","
+        << r.topology_banks_per_stack << ","
+        << r.topology_banks_per_pseudo_channel << ","
+        << r.topology_total_banks << "," << r.topology_sid_count << ","
+        << r.target_node << "," << r.target_node_count << ","
         << r.question_node_count << "," << r.memory_token_tile << ","
         << r.num_token_tiles << "," << r.sampled_node_count << ","
         << r.sampled_edge_count << "," << r.total_item_count << ","
@@ -2798,8 +3165,10 @@ void WritePerQueryCSV(const std::string& path,
         << r.runtime_qk_elements << "," << r.runtime_pv_output_elements << ","
         << r.nog_runtime_qk_elements << "," << r.nog_runtime_pv_output_elements
         << "," << k.active_banks << "," << k.items_per_bank_mean << ","
+        << k.active_stacks << "," << k.active_sid_domains << ","
         << k.items_per_bank_p95 << "," << k.items_per_bank_max << ","
         << k.bank_imbalance << "," << k.bank_collision_ratio << ","
+        << k.stack_imbalance << "," << k.sid_domain_imbalance << ","
         << r.q_broadcast_bytes << "," << r.score_traffic_bytes << ","
         << r.p_return_traffic_bytes << "," << r.message_reduce_traffic_bytes
         << "," << r.local_combine_buffer_max_bytes << ","
@@ -2819,6 +3188,7 @@ void WritePerQueryCSV(const std::string& path,
         << r.total_cycles << "," << r.latency_ns << ","
         << r.near_bank_pe_utilization << "," << r.reducer_utilization << ","
         << r.active_banks << "," << r.active_pseudo_channels << ","
+        << r.active_stacks << ","
         << d.edge_message_count_before_local_combine << ","
         << d.bank_local_group_count_after_combine << ","
         << d.pc_group_count_after_pc_reduce << ","
@@ -2845,7 +3215,8 @@ void WritePerQueryCSV(const std::string& path,
         << r.cached_kv_pipeline_compute_fraction << ","
         << r.cached_kv_pipeline_critical_path_fraction << ","
         << r.pc_reduce_cycles << ","
-        << r.global_reduce_cycles << "," << r.h100_cache_read_cycles << ","
+        << r.global_reduce_cycles << "," << r.cross_stack_merge_cycles << ","
+        << r.h100_cache_read_cycles << ","
         << r.h100_int2_unpack_cycles << "," << r.h100_scale_dequant_cycles
         << "," << r.h100_layout_conversion_cycles << ","
         << r.h100_irregular_gather_penalty_cycles << ","
@@ -2866,14 +3237,21 @@ void WritePerQueryCSV(const std::string& path,
         << g.dst_degree_hist_16_31 << "," << g.dst_degree_hist_32_63 << ","
         << g.dst_degree_hist_64_plus << "," << g.unique_source_banks << ","
         << p.mapping_difference_ratio_vs_hash << "," << p.edge_active_banks
-        << "," << p.edge_active_pseudo_channels << "," << p.bank_edge_count_mean
+        << "," << p.edge_active_pseudo_channels << ","
+        << p.edge_active_stacks << "," << p.edge_active_sid_domains << ","
+        << p.bank_edge_count_mean
         << "," << p.bank_edge_count_p50 << "," << p.bank_edge_count_p95 << ","
         << p.bank_edge_count_max << "," << p.pc_edge_count_mean << ","
         << p.pc_edge_count_p50 << "," << p.pc_edge_count_p95 << ","
         << p.pc_edge_count_max << "," << p.sharded_destination_count << ","
+        << p.stack_edge_count_mean << "," << p.stack_edge_count_p95 << ","
+        << p.stack_edge_count_max << "," << p.stack_imbalance << ","
+        << p.sid_domain_imbalance << ","
         << p.total_destination_shards << "," << p.average_shards_per_destination
         << "," << p.max_shards_per_destination << "," << p.active_bank_histogram
-        << "," << p.active_pc_histogram << "," << r.compute_cycles << ","
+        << "," << p.active_pc_histogram << ","
+        << p.active_stack_histogram << ","
+        << p.active_sid_domain_histogram << "," << r.compute_cycles << ","
         << r.communication_cycles << "," << r.q_broadcast_cycles << ","
         << r.bank_to_pc_communication_cycles << ","
         << r.pc_to_global_communication_cycles << ","
@@ -2883,10 +3261,15 @@ void WritePerQueryCSV(const std::string& path,
         << r.bank_to_pc_total_bytes << "," << r.bank_to_pc_critical_bank_bytes
         << "," << r.bank_to_pc_critical_pc_bytes << ","
         << r.pc_to_global_total_bytes << "," << r.pc_to_global_critical_pc_bytes
-        << "," << r.global_to_npu_bytes << "," << r.pc_reducer_input_groups
+        << "," << r.pc_to_global_critical_stack_bytes << ","
+        << r.global_to_npu_bytes << ","
+        << r.global_to_npu_critical_stack_bytes << ","
+        << r.pc_reducer_input_groups
         << "," << r.pc_reducer_output_groups << ","
         << r.global_reducer_input_groups << ","
-        << r.global_reducer_output_groups << "\n";
+        << r.global_reducer_output_groups << ","
+        << r.global_reducer_critical_stack_input_groups << ","
+        << r.cross_stack_duplicate_output_groups << "\n";
   }
 }
 
@@ -2988,7 +3371,9 @@ void WriteAggregateCSV(const std::string& path,
   csv << "workload,workload_mode,dataset,split,evaluation_role,"
          "selection_policy,placement,"
          "graph_compute_placement,kv_storage_placement,baseline,"
-         "memory_token_tile,num_queries,"
+         "memory_token_tile,topology_num_stacks,topology_banks_per_stack,"
+         "topology_banks_per_pseudo_channel,topology_total_banks,"
+         "topology_sid_count,num_queries,"
          "mean_latency_ns,p50_latency_ns,p95_latency_ns,selected_kv_count,"
          "selected_key_item_count,selected_value_item_count,"
          "cacheable_item_count,nog_count,gnn_layer_count,"
@@ -3005,8 +3390,10 @@ void WriteAggregateCSV(const std::string& path,
          "runtime_pv_output_elements,nog_runtime_qk_elements,"
          "nog_runtime_pv_output_elements,"
          "selected_kv_active_banks,selected_kv_items_per_bank_mean,"
+         "selected_kv_active_stacks,selected_kv_active_sid_domains,"
          "selected_kv_items_per_bank_p95,selected_kv_items_per_bank_max,"
          "selected_kv_bank_imbalance,selected_kv_bank_collision_ratio,"
+         "selected_kv_stack_imbalance,selected_kv_sid_domain_imbalance,"
          "dominant_cached_kv_bottleneck_bank,"
          "cached_kv_bottleneck_bank_query_fraction,"
          "q_broadcast_bytes,score_traffic_bytes,p_return_traffic_bytes,"
@@ -3021,6 +3408,7 @@ void WriteAggregateCSV(const std::string& path,
          "local_buffer_capacity_utilization,"
          "local_buffer_capacity_exceeded_query_fraction,"
          "pc_reducer_buffer_max_bytes,active_banks,active_pseudo_channels,"
+         "active_stacks,"
          "near_bank_pe_utilization,reducer_utilization,bank_imbalance,"
          "pseudo_channel_imbalance,local_combine_reduction_ratio,"
          "pc_reduction_ratio,avg_edges_per_bank_dst,p95_edges_per_bank_dst,"
@@ -3046,6 +3434,7 @@ void WriteAggregateCSV(const std::string& path,
          "mean_cached_kv_pipeline_compute_fraction,"
          "mean_cached_kv_pipeline_critical_path_fraction,"
          "mean_pc_reduce_cycles,mean_global_reduce_cycles,"
+         "mean_cross_stack_merge_cycles,"
          "mean_h100_cache_read_cycles,mean_h100_int2_unpack_cycles,"
          "mean_h100_scale_dequant_cycles,"
          "mean_h100_layout_conversion_cycles,"
@@ -3064,10 +3453,13 @@ void WriteAggregateCSV(const std::string& path,
          "dst_degree_hist_16_31,dst_degree_hist_32_63,"
          "dst_degree_hist_64_plus,unique_source_banks,"
          "mapping_difference_ratio_vs_hash,edge_active_banks,"
-         "edge_active_pseudo_channels,bank_edge_count_mean,"
+         "edge_active_pseudo_channels,edge_active_stacks,"
+         "edge_active_sid_domains,bank_edge_count_mean,"
          "bank_edge_count_p50,bank_edge_count_p95,bank_edge_count_max,"
          "pc_edge_count_mean,pc_edge_count_p50,pc_edge_count_p95,"
          "pc_edge_count_max,sharded_destination_count,"
+         "stack_edge_count_mean,stack_edge_count_p95,stack_edge_count_max,"
+         "stack_imbalance,sid_domain_imbalance,"
          "total_destination_shards,average_shards_per_destination,"
          "max_shards_per_destination,mean_compute_cycles,"
          "mean_communication_cycles,mean_q_broadcast_cycles,"
@@ -3081,10 +3473,14 @@ void WriteAggregateCSV(const std::string& path,
          "mean_bank_to_pc_critical_bank_bytes,"
          "mean_bank_to_pc_critical_pc_bytes,"
          "mean_pc_to_global_total_bytes,"
-         "mean_pc_to_global_critical_pc_bytes,mean_global_to_npu_bytes,"
+         "mean_pc_to_global_critical_pc_bytes,"
+         "mean_pc_to_global_critical_stack_bytes,mean_global_to_npu_bytes,"
+         "mean_global_to_npu_critical_stack_bytes,"
          "mean_pc_reducer_input_groups,mean_pc_reducer_output_groups,"
          "mean_global_reducer_input_groups,"
-         "mean_global_reducer_output_groups\n";
+         "mean_global_reducer_output_groups,"
+         "mean_global_reducer_critical_stack_input_groups,"
+         "mean_cross_stack_duplicate_output_groups\n";
   csv << std::fixed << std::setprecision(6);
   const std::vector<std::string> splits =
       config.workload_mode == "trace" ? config.trace.simulation_splits
@@ -3163,7 +3559,12 @@ void WriteAggregateCSV(const std::string& path,
                   << representative.evaluation_role << ","
                   << representative.selection_policy << "," << placement << ","
                   << placement << "," << kv_placement << "," << baseline << ","
-                  << tile << "," << group.size() << "," << Mean(latency) << ","
+                  << tile << "," << representative.topology_num_stacks << ","
+                  << representative.topology_banks_per_stack << ","
+                  << representative.topology_banks_per_pseudo_channel << ","
+                  << representative.topology_total_banks << ","
+                  << representative.topology_sid_count << "," << group.size()
+                  << "," << Mean(latency) << ","
                   << Percentile(latency, 0.50) << ","
                   << Percentile(latency, 0.95) << "," << Mean(selected) << ","
                   << MeanResultIntField(group,
@@ -3253,6 +3654,12 @@ void WriteAggregateCSV(const std::string& path,
                          group, &KVPlacementDiagnosis::items_per_bank_mean)
                   << ","
                   << MeanKVPlacementField(
+                         group, &KVPlacementDiagnosis::active_stacks)
+                  << ","
+                  << MeanKVPlacementField(
+                         group, &KVPlacementDiagnosis::active_sid_domains)
+                  << ","
+                  << MeanKVPlacementField(
                          group, &KVPlacementDiagnosis::items_per_bank_p95)
                   << ","
                   << MeanKVPlacementField(
@@ -3263,6 +3670,12 @@ void WriteAggregateCSV(const std::string& path,
                   << ","
                   << MeanKVPlacementField(
                          group, &KVPlacementDiagnosis::bank_collision_ratio)
+                  << ","
+                  << MeanKVPlacementField(
+                         group, &KVPlacementDiagnosis::stack_imbalance)
+                  << ","
+                  << MeanKVPlacementField(
+                         group, &KVPlacementDiagnosis::sid_domain_imbalance)
                   << "," << dominant_cached_kv_bank.first << ","
                   << dominant_cached_kv_bank.second << "," << Mean(q_broadcast)
                   << "," << Mean(score_traffic) << "," << Mean(p_return) << ","
@@ -3302,7 +3715,9 @@ void WriteAggregateCSV(const std::string& path,
                   << MeanResultIntField(
                          group, &QueryResult::local_buffer_capacity_exceeded)
                   << "," << Mean(pc_buffer) << "," << Mean(active_banks) << ","
-                  << Mean(active_pcs) << "," << Mean(pe_util) << ","
+                  << Mean(active_pcs) << ","
+                  << MeanResultIntField(group, &QueryResult::active_stacks)
+                  << "," << Mean(pe_util) << ","
                   << Mean(reducer_util) << "," << Mean(bank_imbalance) << ","
                   << Mean(pc_imbalance) << "," << Mean(local_reduction) << ","
                   << Mean(pc_reduction) << "," << Mean(avg_edges) << ","
@@ -3380,6 +3795,9 @@ void WriteAggregateCSV(const std::string& path,
                   << MeanResultField(group, &QueryResult::pc_reduce_cycles)
                   << ","
                   << MeanResultField(group, &QueryResult::global_reduce_cycles)
+                  << ","
+                  << MeanResultField(group,
+                                     &QueryResult::cross_stack_merge_cycles)
                   << ","
                   << MeanResultField(group,
                                      &QueryResult::h100_cache_read_cycles)
@@ -3462,6 +3880,12 @@ void WriteAggregateCSV(const std::string& path,
                          &PlacementValidation::edge_active_pseudo_channels)
                   << ","
                   << MeanPlacementField(
+                         group, &PlacementValidation::edge_active_stacks)
+                  << ","
+                  << MeanPlacementField(
+                         group, &PlacementValidation::edge_active_sid_domains)
+                  << ","
+                  << MeanPlacementField(
                          group, &PlacementValidation::bank_edge_count_mean)
                   << ","
                   << MeanPlacementField(
@@ -3487,6 +3911,21 @@ void WriteAggregateCSV(const std::string& path,
                   << ","
                   << MeanPlacementField(
                          group, &PlacementValidation::sharded_destination_count)
+                  << ","
+                  << MeanPlacementField(
+                         group, &PlacementValidation::stack_edge_count_mean)
+                  << ","
+                  << MeanPlacementField(
+                         group, &PlacementValidation::stack_edge_count_p95)
+                  << ","
+                  << MeanPlacementField(
+                         group, &PlacementValidation::stack_edge_count_max)
+                  << ","
+                  << MeanPlacementField(
+                         group, &PlacementValidation::stack_imbalance)
+                  << ","
+                  << MeanPlacementField(
+                         group, &PlacementValidation::sid_domain_imbalance)
                   << ","
                   << MeanPlacementField(
                          group, &PlacementValidation::total_destination_shards)
@@ -3540,7 +3979,13 @@ void WriteAggregateCSV(const std::string& path,
                   << MeanResultField(
                          group, &QueryResult::pc_to_global_critical_pc_bytes)
                   << ","
+                  << MeanResultField(
+                         group, &QueryResult::pc_to_global_critical_stack_bytes)
+                  << ","
                   << MeanResultField(group, &QueryResult::global_to_npu_bytes)
+                  << ","
+                  << MeanResultField(
+                         group, &QueryResult::global_to_npu_critical_stack_bytes)
                   << ","
                   << MeanResultField(group,
                                      &QueryResult::pc_reducer_input_groups)
@@ -3553,6 +3998,14 @@ void WriteAggregateCSV(const std::string& path,
                   << ","
                   << MeanResultField(group,
                                      &QueryResult::global_reducer_output_groups)
+                  << ","
+                  << MeanResultField(
+                         group,
+                         &QueryResult::global_reducer_critical_stack_input_groups)
+                  << ","
+                  << MeanResultField(
+                         group,
+                         &QueryResult::cross_stack_duplicate_output_groups)
                   << "\n";
             }
           }
