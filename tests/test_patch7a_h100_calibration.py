@@ -122,7 +122,7 @@ def populate_profile(template: Path, profile: Path) -> None:
             float(row["h100_cached_kv_groups"]) * TARGET["h100_group_cycles"]
         )
         cache_read = (
-            float(row["runtime_loaded_cache_bytes"])
+            float(row["runtime_loaded_total_bytes"])
             / TARGET["h100_cache_bytes_per_cycle"]
         )
         groups = float(row["h100_cached_kv_groups"])

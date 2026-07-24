@@ -35,6 +35,13 @@ namespace {
 
 namespace fs = std::filesystem;
 
+constexpr const char* kDataOnlyByteAccounting =
+    "quantized_data_only_excluding_scale_and_container_metadata";
+constexpr const char* kSeparateMetadataByteAccounting =
+    "separate_quantized_data_fp32_scale_and_uint32_gather_index";
+constexpr int64_t kFp32Bytes = 4;
+constexpr int kUint32Bytes = 4;
+
 [[noreturn]] void Fail(const std::string &source, const std::string &message) {
   throw std::runtime_error(source + ": " + message);
 }
@@ -137,6 +144,13 @@ GOFAShape Shape(const YAML::Node &node, const std::string &source) {
     result.dims.push_back(dim);
   }
   return result;
+}
+
+GOFAShape OptionalShape(const YAML::Node &node, const std::string &source) {
+  if (!node || node.IsNull()) {
+    return {};
+  }
+  return Shape(node, source);
 }
 
 bool SameShape(const GOFAShape &lhs, const GOFAShape &rhs) {
@@ -432,6 +446,9 @@ GOFATraceQuery LoadQuery(const fs::path &path, int trace_order,
               "cache item type/eligibility mismatch");
     }
     item.memory_shape = Shape(node["memory_shape"], source + ".memory_shape");
+    item.memory_scale_shape =
+        OptionalShape(node["memory_scale_shape"],
+                      source + ".memory_scale_shape");
     Require(item.memory_shape.dims ==
                 std::vector<int64_t>(
                     {query.model.memory_tokens, query.model.hidden_size}),
@@ -450,6 +467,12 @@ GOFATraceQuery LoadQuery(const fs::path &path, int trace_order,
           Shape(layers[layer_index]["key_shape"], source + ".key_shape");
       layer.value_shape =
           Shape(layers[layer_index]["value_shape"], source + ".value_shape");
+      layer.key_scale_shape =
+          OptionalShape(layers[layer_index]["key_scale_shape"],
+                        source + ".key_scale_shape");
+      layer.value_scale_shape =
+          OptionalShape(layers[layer_index]["value_scale_shape"],
+                        source + ".value_scale_shape");
       const std::vector<int64_t> expected_shape = {
           query.model.num_key_value_heads, item.valid_text_tokens,
           query.model.head_dim};
@@ -685,6 +708,10 @@ GOFATraceQuery LoadQuery(const fs::path &path, int trace_order,
   int64_t full_key_bytes = 0;
   int64_t full_value_bytes = 0;
   int64_t edge_cache_bytes = 0;
+  int64_t memory_scale_bytes = 0;
+  int64_t full_key_scale_bytes = 0;
+  int64_t full_value_scale_bytes = 0;
+  int64_t edge_cache_scale_bytes = 0;
   for (const auto &item : query.cache_items) {
     if (!item.cache_eligible) {
       continue;
@@ -692,14 +719,38 @@ GOFATraceQuery LoadQuery(const fs::path &path, int trace_order,
     memory_bytes += item.memory_logical_bytes;
     full_key_bytes += item.full_key_logical_bytes;
     full_value_bytes += item.full_value_logical_bytes;
+    const int64_t item_memory_scale_bytes =
+        item.memory_shape.Numel() == 0
+            ? 0
+            : item.memory_scale_shape.Numel() * kFp32Bytes;
+    int64_t item_key_scale_bytes = 0;
+    int64_t item_value_scale_bytes = 0;
+    memory_scale_bytes += item_memory_scale_bytes;
+    for (const auto &layer : item.layers) {
+      item_key_scale_bytes +=
+          layer.key_shape.Numel() == 0
+              ? 0
+              : layer.key_scale_shape.Numel() * kFp32Bytes;
+      item_value_scale_bytes +=
+          layer.value_shape.Numel() == 0
+              ? 0
+              : layer.value_scale_shape.Numel() * kFp32Bytes;
+    }
+    full_key_scale_bytes += item_key_scale_bytes;
+    full_value_scale_bytes += item_value_scale_bytes;
     if (item.item_type == "edge") {
       edge_cache_bytes += item.memory_logical_bytes +
                           item.full_key_logical_bytes +
                           item.full_value_logical_bytes;
+      edge_cache_scale_bytes += item_memory_scale_bytes +
+                                item_key_scale_bytes +
+                                item_value_scale_bytes;
     }
   }
   int64_t selected_key_bytes = 0;
   int64_t selected_value_bytes = 0;
+  int64_t selected_key_scale_bytes = 0;
+  int64_t selected_value_scale_bytes = 0;
   for (size_t layer_index = 0;
        layer_index < query.model.suffix_layer_ids.size(); ++layer_index) {
     const int layer_id = query.model.suffix_layer_ids[layer_index];
@@ -707,16 +758,28 @@ GOFATraceQuery LoadQuery(const fs::path &path, int trace_order,
       const auto &item = query.cache_items[item_index];
       selected_key_bytes += QuantizedBytes(
           FindKVLayer(item, layer_id, source).key_shape, item.key_bits);
+      selected_key_scale_bytes +=
+          FindKVLayer(item, layer_id, source).key_shape.Numel() == 0
+              ? 0
+              : FindKVLayer(item, layer_id, source).key_scale_shape.Numel() *
+                    kFp32Bytes;
     }
     for (int item_index : query.selected_value_items_by_layer[layer_index]) {
       const auto &item = query.cache_items[item_index];
       selected_value_bytes += QuantizedBytes(
           FindKVLayer(item, layer_id, source).value_shape, item.value_bits);
+      selected_value_scale_bytes +=
+          FindKVLayer(item, layer_id, source).value_shape.Numel() == 0
+              ? 0
+              : FindKVLayer(item, layer_id, source).value_scale_shape.Numel() *
+                    kFp32Bytes;
     }
   }
   const YAML::Node traffic = RequireMap(trace, "traffic_metadata", source);
-  Require(Required<std::string>(traffic, "byte_accounting", source) ==
-              "quantized_data_only_excluding_scale_and_container_metadata",
+  query.traffic.byte_accounting =
+      Required<std::string>(traffic, "byte_accounting", source);
+  Require(query.traffic.byte_accounting == kDataOnlyByteAccounting ||
+              query.traffic.byte_accounting == kSeparateMetadataByteAccounting,
           source, "traffic byte accounting mode mismatch");
   query.traffic.memory_cache_bytes =
       Required<int64_t>(traffic, "memory_cache_bytes", source);
@@ -749,6 +812,124 @@ GOFATraceQuery LoadQuery(const fs::path &path, int trace_order,
                   memory_bytes + selected_key_bytes + selected_value_bytes,
           source, "trace traffic metadata mismatch");
 
+  if (query.traffic.byte_accounting == kSeparateMetadataByteAccounting) {
+    for (const auto &item : query.cache_items) {
+      Require(item.memory_scale_shape.dims ==
+                  std::vector<int64_t>({query.model.hidden_size}),
+              source, "memory scale shape mismatch");
+      for (const auto &layer : item.layers) {
+        Require(layer.key_scale_shape.dims ==
+                        std::vector<int64_t>({query.model.head_dim}) &&
+                    layer.value_scale_shape.dims ==
+                        std::vector<int64_t>({query.model.head_dim}),
+                source, "text K/V scale shape mismatch");
+      }
+    }
+
+    const YAML::Node logical =
+        RequireMap(traffic, "logical_data_bytes", source);
+    Require(Required<int64_t>(logical, "memory_cache", source) ==
+                    memory_bytes &&
+                Required<int64_t>(logical, "selected_key", source) ==
+                    selected_key_bytes &&
+                Required<int64_t>(logical, "selected_value", source) ==
+                    selected_value_bytes &&
+                Required<int64_t>(logical, "full_key", source) ==
+                    full_key_bytes &&
+                Required<int64_t>(logical, "full_value", source) ==
+                    full_value_bytes &&
+                Required<int64_t>(logical, "edge_cache", source) ==
+                    edge_cache_bytes &&
+                Required<int64_t>(logical, "persistent_cache", source) ==
+                    query.traffic.persistent_cache_bytes &&
+                Required<int64_t>(logical, "runtime_loaded", source) ==
+                    query.traffic.runtime_loaded_cache_bytes,
+            source, "logical data byte metadata mismatch");
+
+    const YAML::Node scales = RequireMap(traffic, "scale_bytes", source);
+    Require(Required<std::string>(scales, "dtype", source) == "float32",
+            source, "scale dtype mismatch");
+    const int64_t persistent_scale_bytes =
+        memory_scale_bytes + full_key_scale_bytes + full_value_scale_bytes;
+    const int64_t runtime_scale_bytes =
+        memory_scale_bytes + selected_key_scale_bytes +
+        selected_value_scale_bytes;
+    Require(Required<int64_t>(scales, "memory_cache", source) ==
+                    memory_scale_bytes &&
+                Required<int64_t>(scales, "selected_key", source) ==
+                    selected_key_scale_bytes &&
+                Required<int64_t>(scales, "selected_value", source) ==
+                    selected_value_scale_bytes &&
+                Required<int64_t>(scales, "full_key", source) ==
+                    full_key_scale_bytes &&
+                Required<int64_t>(scales, "full_value", source) ==
+                    full_value_scale_bytes &&
+                Required<int64_t>(scales, "edge_cache", source) ==
+                    edge_cache_scale_bytes &&
+                Required<int64_t>(scales, "persistent_cache", source) ==
+                    persistent_scale_bytes &&
+                Required<int64_t>(scales, "runtime_loaded", source) ==
+                    runtime_scale_bytes,
+            source, "trace scale metadata mismatch");
+
+    const YAML::Node indices =
+        RequireMap(traffic, "gather_index_metadata_bytes", source);
+    Require(Required<std::string>(indices, "index_dtype", source) == "uint32",
+            source, "gather index dtype mismatch");
+    const int bytes_per_index =
+        Required<int>(indices, "bytes_per_index", source);
+    Require(bytes_per_index == kUint32Bytes, source,
+            "gather index width mismatch");
+    const int64_t memory_index_bytes =
+        static_cast<int64_t>(query.eligible_item_indices.size()) *
+        bytes_per_index;
+    int64_t selected_key_accesses = 0;
+    int64_t selected_value_accesses = 0;
+    for (const auto &selected : query.selected_key_items_by_layer) {
+      selected_key_accesses += selected.size();
+    }
+    for (const auto &selected : query.selected_value_items_by_layer) {
+      selected_value_accesses += selected.size();
+    }
+    const int64_t selected_key_index_bytes =
+        selected_key_accesses * bytes_per_index;
+    const int64_t selected_value_index_bytes =
+        selected_value_accesses * bytes_per_index;
+    const int64_t runtime_index_bytes =
+        memory_index_bytes + selected_key_index_bytes +
+        selected_value_index_bytes;
+    Require(Required<int64_t>(indices, "memory_item_indices", source) ==
+                    memory_index_bytes &&
+                Required<int64_t>(indices, "selected_key_item_indices",
+                                  source) == selected_key_index_bytes &&
+                Required<int64_t>(indices, "selected_value_item_indices",
+                                  source) == selected_value_index_bytes &&
+                Required<int64_t>(indices, "runtime_loaded", source) ==
+                    runtime_index_bytes,
+            source, "trace gather index metadata mismatch");
+
+    query.traffic.persistent_scale_bytes = persistent_scale_bytes;
+    query.traffic.runtime_loaded_scale_bytes =
+        Required<int64_t>(traffic, "runtime_loaded_scale_bytes", source);
+    query.traffic.persistent_gather_index_metadata_bytes =
+        memory_index_bytes;
+    query.traffic.runtime_gather_index_metadata_bytes = Required<int64_t>(
+        traffic, "runtime_gather_index_metadata_bytes", source);
+    Require(query.traffic.runtime_loaded_scale_bytes ==
+                    runtime_scale_bytes &&
+                query.traffic.runtime_gather_index_metadata_bytes ==
+                    runtime_index_bytes,
+            source, "trace runtime metadata byte mismatch");
+  }
+  query.traffic.persistent_total_bytes =
+      query.traffic.persistent_cache_bytes +
+      query.traffic.persistent_scale_bytes +
+      query.traffic.persistent_gather_index_metadata_bytes;
+  query.traffic.runtime_loaded_total_bytes =
+      query.traffic.runtime_loaded_cache_bytes +
+      query.traffic.runtime_loaded_scale_bytes +
+      query.traffic.runtime_gather_index_metadata_bytes;
+
   const YAML::Node summary = RequireMap(trace, "summary", source);
   query.total_item_count = Required<int>(summary, "total_item_count", source);
   query.cacheable_item_count =
@@ -773,6 +954,17 @@ GOFATraceQuery LoadQuery(const fs::path &path, int trace_order,
           Required<int64_t>(summary, "runtime_loaded_cache_bytes", source) ==
               query.traffic.runtime_loaded_cache_bytes,
       source, "query summary count/byte mismatch");
+  if (query.traffic.byte_accounting == kSeparateMetadataByteAccounting) {
+    Require(
+        Required<int64_t>(summary, "persistent_scale_bytes", source) ==
+                query.traffic.persistent_scale_bytes &&
+            Required<int64_t>(summary, "runtime_loaded_scale_bytes", source) ==
+                query.traffic.runtime_loaded_scale_bytes &&
+            Required<int64_t>(summary, "runtime_gather_index_metadata_bytes",
+                              source) ==
+                query.traffic.runtime_gather_index_metadata_bytes,
+        source, "query summary metadata byte mismatch");
+  }
   const double denominator = 1.0 * query.eligible_item_indices.size() *
                              query.model.suffix_layer_ids.size();
   double key_accesses = 0.0;
@@ -822,6 +1014,15 @@ void ValidateIndexEntry(const YAML::Node &entry, const GOFATraceQuery &query,
               Required<int64_t>(entry, "runtime_loaded_bytes", source) ==
                   query.traffic.runtime_loaded_cache_bytes,
           source, "index characterization mismatch");
+  if (query.traffic.byte_accounting == kSeparateMetadataByteAccounting) {
+    Require(
+        Required<int64_t>(entry, "runtime_loaded_scale_bytes", source) ==
+                query.traffic.runtime_loaded_scale_bytes &&
+            Required<int64_t>(entry, "runtime_gather_index_metadata_bytes",
+                              source) ==
+                query.traffic.runtime_gather_index_metadata_bytes,
+        source, "index metadata characterization mismatch");
+  }
 }
 
 std::vector<GOFATraceQuery> LoadTask(const GOFATraceLoadConfig &config,

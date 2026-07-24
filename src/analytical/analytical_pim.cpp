@@ -296,6 +296,7 @@ struct QuerySample {
   std::string trace_query_id;
   std::string trace_source_path;
   std::string selection_policy;
+  std::string traffic_byte_accounting = "synthetic_data_only";
   int trace_order = -1;
   int runtime_query_index = -1;
   int target_node = 0;
@@ -321,6 +322,12 @@ struct QuerySample {
   double selected_value_bytes = 0.0;
   double persistent_cache_bytes = 0.0;
   double runtime_loaded_cache_bytes = 0.0;
+  double persistent_scale_bytes = 0.0;
+  double runtime_loaded_scale_bytes = 0.0;
+  double persistent_gather_index_metadata_bytes = 0.0;
+  double runtime_gather_index_metadata_bytes = 0.0;
+  double persistent_total_bytes = 0.0;
+  double runtime_loaded_total_bytes = 0.0;
   double cache_inventory_sequence_tokens = 0.0;
   double cache_inventory_valid_text_tokens = 0.0;
   double selected_sequence_tokens = 0.0;
@@ -448,6 +455,7 @@ struct QueryResult {
   std::string trace_query_id;
   std::string trace_source_path;
   std::string selection_policy;
+  std::string traffic_byte_accounting;
   std::string placement;
   std::string graph_compute_placement;
   std::string kv_storage_placement;
@@ -485,6 +493,12 @@ struct QueryResult {
   double selected_value_bytes = 0.0;
   double persistent_cache_bytes = 0.0;
   double runtime_loaded_cache_bytes = 0.0;
+  double persistent_scale_bytes = 0.0;
+  double runtime_loaded_scale_bytes = 0.0;
+  double persistent_gather_index_metadata_bytes = 0.0;
+  double runtime_gather_index_metadata_bytes = 0.0;
+  double persistent_total_bytes = 0.0;
+  double runtime_loaded_total_bytes = 0.0;
   double cache_inventory_sequence_tokens = 0.0;
   double cache_inventory_valid_text_tokens = 0.0;
   double selected_sequence_tokens = 0.0;
@@ -1758,6 +1772,8 @@ QuerySample GenerateQuery(const SimulationConfig& config,
   query.persistent_cache_bytes = query.full_key_bytes + query.full_value_bytes;
   query.runtime_loaded_cache_bytes =
       query.selected_key_bytes + query.selected_value_bytes;
+  query.persistent_total_bytes = query.persistent_cache_bytes;
+  query.runtime_loaded_total_bytes = query.runtime_loaded_cache_bytes;
   query.selected_key_ratio =
       query.cacheable_item_count == 0
           ? 0.0
@@ -1783,6 +1799,7 @@ QuerySample ConvertTraceQuery(const SimulationConfig& config,
   query.trace_query_id = trace.query_id;
   query.trace_source_path = trace.source_path;
   query.selection_policy = trace.selection_policy;
+  query.traffic_byte_accounting = trace.traffic.byte_accounting;
   query.trace_order = trace.trace_order;
   query.runtime_query_index = trace.runtime_query_index;
   query.full_graph_nodes = trace.num_graph_nodes;
@@ -1809,6 +1826,15 @@ QuerySample ConvertTraceQuery(const SimulationConfig& config,
   query.selected_value_bytes = trace.traffic.selected_value_bytes;
   query.persistent_cache_bytes = trace.traffic.persistent_cache_bytes;
   query.runtime_loaded_cache_bytes = trace.traffic.runtime_loaded_cache_bytes;
+  query.persistent_scale_bytes = trace.traffic.persistent_scale_bytes;
+  query.runtime_loaded_scale_bytes = trace.traffic.runtime_loaded_scale_bytes;
+  query.persistent_gather_index_metadata_bytes =
+      trace.traffic.persistent_gather_index_metadata_bytes;
+  query.runtime_gather_index_metadata_bytes =
+      trace.traffic.runtime_gather_index_metadata_bytes;
+  query.persistent_total_bytes = trace.traffic.persistent_total_bytes;
+  query.runtime_loaded_total_bytes =
+      trace.traffic.runtime_loaded_total_bytes;
   for (const auto& item : trace.cache_items) {
     query.cache_inventory_sequence_tokens += item.sequence_length;
     query.cache_inventory_valid_text_tokens += item.valid_text_tokens;
@@ -2604,6 +2630,7 @@ QueryResult SimulateQuery(const SimulationConfig& config,
   result.trace_query_id = query.trace_query_id;
   result.trace_source_path = query.trace_source_path;
   result.selection_policy = query.selection_policy;
+  result.traffic_byte_accounting = query.traffic_byte_accounting;
   result.placement = graph_placement;
   result.graph_compute_placement = graph_placement;
   result.kv_storage_placement = kv_placement;
@@ -2648,6 +2675,14 @@ QueryResult SimulateQuery(const SimulationConfig& config,
   result.selected_value_bytes = query.selected_value_bytes;
   result.persistent_cache_bytes = query.persistent_cache_bytes;
   result.runtime_loaded_cache_bytes = query.runtime_loaded_cache_bytes;
+  result.persistent_scale_bytes = query.persistent_scale_bytes;
+  result.runtime_loaded_scale_bytes = query.runtime_loaded_scale_bytes;
+  result.persistent_gather_index_metadata_bytes =
+      query.persistent_gather_index_metadata_bytes;
+  result.runtime_gather_index_metadata_bytes =
+      query.runtime_gather_index_metadata_bytes;
+  result.persistent_total_bytes = query.persistent_total_bytes;
+  result.runtime_loaded_total_bytes = query.runtime_loaded_total_bytes;
   result.cache_inventory_sequence_tokens =
       query.cache_inventory_sequence_tokens;
   result.cache_inventory_valid_text_tokens =
@@ -2692,7 +2727,7 @@ QueryResult SimulateQuery(const SimulationConfig& config,
       const double efficiency =
           std::min(1.0, std::max(0.01, config.pe.h100_small_batch_efficiency));
       result.h100_cache_read_cycles =
-          result.runtime_loaded_cache_bytes /
+          result.runtime_loaded_total_bytes /
           std::max(1.0, config.pe.h100_cache_bytes_per_cycle);
       result.h100_irregular_gather_penalty_cycles =
           result.h100_cache_read_cycles *
@@ -3215,7 +3250,11 @@ void WritePerQueryCSV(const std::string& path,
          "selected_kv_ratio_vs_full_graph,selected_kv_bytes,"
          "memory_cache_bytes,edge_cache_bytes,full_key_bytes,full_value_bytes,"
          "selected_key_bytes,selected_value_bytes,persistent_cache_bytes,"
-         "runtime_loaded_cache_bytes,cache_inventory_sequence_tokens,"
+         "runtime_loaded_cache_bytes,traffic_byte_accounting,"
+         "persistent_scale_bytes,runtime_loaded_scale_bytes,"
+         "persistent_gather_index_metadata_bytes,"
+         "runtime_gather_index_metadata_bytes,persistent_total_bytes,"
+         "runtime_loaded_total_bytes,cache_inventory_sequence_tokens,"
          "cache_inventory_valid_text_tokens,selected_sequence_tokens,"
          "valid_text_tokens,stored_key_tokens,"
          "stored_value_tokens,trace_cached_qk_groups,"
@@ -3332,7 +3371,13 @@ void WritePerQueryCSV(const std::string& path,
         << r.edge_cache_bytes << "," << r.full_key_bytes << ","
         << r.full_value_bytes << "," << r.selected_key_bytes << ","
         << r.selected_value_bytes << "," << r.persistent_cache_bytes << ","
-        << r.runtime_loaded_cache_bytes << ","
+        << r.runtime_loaded_cache_bytes << "," << r.traffic_byte_accounting
+        << "," << r.persistent_scale_bytes << ","
+        << r.runtime_loaded_scale_bytes << ","
+        << r.persistent_gather_index_metadata_bytes << ","
+        << r.runtime_gather_index_metadata_bytes << ","
+        << r.persistent_total_bytes << "," << r.runtime_loaded_total_bytes
+        << ","
         << r.cache_inventory_sequence_tokens << ","
         << r.cache_inventory_valid_text_tokens << ","
         << r.selected_sequence_tokens << "," << r.valid_text_tokens << ","
@@ -3558,7 +3603,11 @@ void WriteAggregateCSV(const std::string& path,
          "selected_key_ratio,selected_value_ratio,selected_kv_ratio,"
          "memory_cache_bytes,edge_cache_bytes,full_key_bytes,full_value_bytes,"
          "selected_key_bytes,selected_value_bytes,persistent_cache_bytes,"
-         "runtime_loaded_cache_bytes,cache_inventory_sequence_tokens,"
+         "runtime_loaded_cache_bytes,traffic_byte_accounting,"
+         "persistent_scale_bytes,runtime_loaded_scale_bytes,"
+         "persistent_gather_index_metadata_bytes,"
+         "runtime_gather_index_metadata_bytes,persistent_total_bytes,"
+         "runtime_loaded_total_bytes,cache_inventory_sequence_tokens,"
          "cache_inventory_valid_text_tokens,selected_sequence_tokens,"
          "valid_text_tokens,stored_key_tokens,"
          "stored_value_tokens,trace_cached_qk_groups,"
@@ -3790,6 +3839,27 @@ void WriteAggregateCSV(const std::string& path,
                   << ","
                   << MeanResultField(group,
                                      &QueryResult::runtime_loaded_cache_bytes)
+                  << "," << representative.traffic_byte_accounting
+                  << ","
+                  << MeanResultField(group,
+                                     &QueryResult::persistent_scale_bytes)
+                  << ","
+                  << MeanResultField(group,
+                                     &QueryResult::runtime_loaded_scale_bytes)
+                  << ","
+                  << MeanResultField(
+                         group,
+                         &QueryResult::persistent_gather_index_metadata_bytes)
+                  << ","
+                  << MeanResultField(
+                         group,
+                         &QueryResult::runtime_gather_index_metadata_bytes)
+                  << ","
+                  << MeanResultField(group,
+                                     &QueryResult::persistent_total_bytes)
+                  << ","
+                  << MeanResultField(group,
+                                     &QueryResult::runtime_loaded_total_bytes)
                   << ","
                   << MeanResultField(
                          group, &QueryResult::cache_inventory_sequence_tokens)
@@ -4337,7 +4407,7 @@ QueryCostMetrics CalculateQueryCost(const QueryResult& result,
       (result.local_vadd_initialization_groups +
        result.local_vadd_operation_groups) *
       message_bytes_per_group;
-  metrics.modeled_hbm_read_bytes = result.runtime_loaded_cache_bytes;
+  metrics.modeled_hbm_read_bytes = result.runtime_loaded_total_bytes;
 
   metrics.q8k8_energy_nj =
       metrics.graph_score_groups * config.cost.q8k8_group_pj / 1000.0;
@@ -4753,7 +4823,7 @@ void PrintSummary(const SimulationConfig& config,
               communication.push_back(r.communication_cycles);
               reducer.push_back(r.reducer_cycles);
               traffic_stall.push_back(r.traffic_stall_fraction);
-              loaded_bytes.push_back(r.runtime_loaded_cache_bytes);
+              loaded_bytes.push_back(r.runtime_loaded_total_bytes);
               group.push_back(&r);
             }
           }
@@ -4765,7 +4835,7 @@ void PrintSummary(const SimulationConfig& config,
                       << " compute_cycles=" << Mean(compute)
                       << " communication_cycles=" << Mean(communication)
                       << " reducer_cycles=" << Mean(reducer)
-                      << " runtime_loaded_bytes=" << Mean(loaded_bytes)
+                      << " runtime_loaded_total_bytes=" << Mean(loaded_bytes)
                       << " traffic_stall=" << std::setprecision(4)
                       << Mean(traffic_stall)
                       << " mean_local_reduction=" << std::setprecision(4)

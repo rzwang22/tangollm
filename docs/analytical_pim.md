@@ -97,10 +97,12 @@ one, and the measured stages are:
 - irregular gather and small-batch penalties;
 - fixed launch/synchronization/unattributed overhead.
 
-The H100 cache-read feature is trace-native `runtime_loaded_cache_bytes`, which
-includes the memory-state payload and selected K/V payload required by the
-query. `selected_kv_bytes` is retained as a validator/diagnostic field but is
-not substituted for total runtime-loaded traffic.
+The H100 cache-read feature is trace-native `runtime_loaded_total_bytes`. For
+legacy traces this equals `runtime_loaded_cache_bytes`. For the separate
+metadata schema it is the sum of quantized data, FP32 scale metadata, and
+UINT32 gather-index metadata. `selected_kv_bytes` is retained as a
+validator/diagnostic field but is not substituted for total runtime-loaded
+traffic.
 
 All timings are nanoseconds averaged over the declared measured iterations.
 `measured_total_latency_ns` must equal the sum of the ten stage columns within
@@ -286,17 +288,22 @@ For formal traces, the simulator directly consumes:
 - sampled graph structure and NOG metadata;
 - memory-state and text-K/V inventory;
 - selected K and V item masks for every suffix layer;
-- quantized logical bytes excluding scale/container metadata;
+- quantized logical data bytes;
+- FP32 scale bytes and UINT32 gather-index bytes when the trace uses
+  `separate_quantized_data_fp32_scale_and_uint32_gather_index`;
 - valid and stored token counts;
 - runtime QK, PV, GNN node, and GNN edge shapes.
 
-The strict validator cross-checks every query against its index entry and
-cross-checks all indexed queries against `summary.json`. It also validates
+The strict validator cross-checks every query against its index entry and,
+when `trace_workload.validate_summary` is enabled, cross-checks all indexed
+queries against `summary.json`. It also validates
 model dimensions, graph mappings, NOG placement, inventory types and
 precision, selection sets/masks, per-layer sharing, runtime item order,
-QK/PV token dimensions, logical-byte accounting, selection ratios, split
-counts, split order, and exact enumeration of `query_*.json` files. Tensor
-payload fields are rejected.
+QK/PV token dimensions, logical-data accounting, scale shapes and byte totals,
+gather-index counts and byte totals, selection ratios, split counts, split
+order, and exact enumeration of `query_*.json` files. Tensor payload fields are
+rejected. Trace suites without a task-level `summary.json` must explicitly set
+`validate_summary: false`; per-query and index validation remains strict.
 
 Formal trace execution does not use the synthetic
 `selected_count * 786432` estimate. Cached-KV work and bytes come from the

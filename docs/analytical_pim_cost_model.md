@@ -24,7 +24,8 @@ When the model is enabled, the simulator writes three additional files:
 - `cost_aggregate_csv`: mean, p50, and p95 cost metrics grouped by workload,
   split, placement, baseline, and tile size
 
-The existing latency and traffic CSV files are unchanged.
+The latency and traffic CSVs retain their existing data-only byte columns and
+add separate scale, gather-index, and total-byte columns.
 
 ## Accounting
 
@@ -40,10 +41,12 @@ E_dynamic = E_Q8K8 + E_P8V8 + E_Q8K2 + E_P8V2 + E_scale + E_VADD
           + E_local_buffer + E_HBM_read + E_communication + E_reducer
 ```
 
-The HBM term currently includes trace-native runtime-loaded K/V bytes. It does
-not include xPU model-weight traffic or unspecified graph-state DRAM traffic.
-The communication term includes Q broadcast, bank-to-pCH, pCH-to-global, and
-global-to-NPU traffic.
+The HBM term uses trace-native `runtime_loaded_total_bytes`. Legacy traces
+provide quantized data only. Traces using the separate metadata schema add FP32
+scale bytes and UINT32 gather-index bytes to the same runtime read total. The
+term does not include xPU model-weight traffic or unspecified graph-state DRAM
+traffic. The communication term includes Q broadcast, bank-to-pCH,
+pCH-to-global, and global-to-NPU traffic.
 
 Leakage energy uses the query latency and a configurable inactive-unit leakage
 factor. The CSV also reports the all-units-on leakage bound. Average power is

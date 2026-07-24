@@ -55,6 +55,8 @@ struct GOFATraceKVLayer {
   int layer_id = 0;
   GOFAShape key_shape;
   GOFAShape value_shape;
+  GOFAShape key_scale_shape;
+  GOFAShape value_scale_shape;
 };
 
 struct GOFATraceCacheItem {
@@ -69,6 +71,7 @@ struct GOFATraceCacheItem {
   int key_bits = 0;
   int value_bits = 0;
   GOFAShape memory_shape;
+  GOFAShape memory_scale_shape;
   std::vector<GOFATraceKVLayer> layers;
   int64_t memory_logical_bytes = 0;
   int64_t full_key_logical_bytes = 0;
@@ -97,6 +100,7 @@ struct GOFATraceRuntimeLayer {
 };
 
 struct GOFATraceTraffic {
+  std::string byte_accounting;
   int64_t memory_cache_bytes = 0;
   int64_t selected_key_bytes = 0;
   int64_t selected_value_bytes = 0;
@@ -105,6 +109,12 @@ struct GOFATraceTraffic {
   int64_t edge_cache_bytes = 0;
   int64_t persistent_cache_bytes = 0;
   int64_t runtime_loaded_cache_bytes = 0;
+  int64_t persistent_scale_bytes = 0;
+  int64_t runtime_loaded_scale_bytes = 0;
+  int64_t persistent_gather_index_metadata_bytes = 0;
+  int64_t runtime_gather_index_metadata_bytes = 0;
+  int64_t persistent_total_bytes = 0;
+  int64_t runtime_loaded_total_bytes = 0;
   int nog_online_item_count = 0;
 };
 

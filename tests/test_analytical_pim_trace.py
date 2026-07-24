@@ -69,6 +69,146 @@ def assert_close(actual: str, expected: float) -> None:
     assert abs(float(actual) - expected) < 1e-6, (actual, expected)
 
 
+def scale_bytes(shape: list[int]) -> int:
+    return int(shape[-1]) * 4 if shape and all(shape) else 0
+
+
+def convert_fixture_to_separate_metadata(trace_root: Path) -> None:
+    task_root = trace_root / TASK_DIRECTORY
+    index_entries = [
+        json.loads(line)
+        for line in (task_root / "trace_index.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    index_by_query = {entry["query_id"]: entry for entry in index_entries}
+
+    for query_file in sorted(task_root.glob("query_*.json")):
+        payload = json.loads(query_file.read_text())
+        inventory = payload["cache_item_inventory"]
+        cacheable = [item for item in inventory if item["cache_eligible"]]
+        selected = payload["selective_kv_access"]
+        traffic = payload["traffic_metadata"]
+
+        memory_scale = 0
+        full_key_scale = 0
+        full_value_scale = 0
+        edge_scale = 0
+        for item in inventory:
+            item["memory_scale_shape"] = [int(item["memory_shape"][-1])]
+            item_memory_scale = scale_bytes(item["memory_shape"])
+            item_key_scale = 0
+            item_value_scale = 0
+            for layer in item["text_kv_shapes"]:
+                layer["key_scale_shape"] = [int(layer["key_shape"][-1])]
+                layer["value_scale_shape"] = [int(layer["value_shape"][-1])]
+                item_key_scale += scale_bytes(layer["key_shape"])
+                item_value_scale += scale_bytes(layer["value_shape"])
+            if item["cache_eligible"]:
+                memory_scale += item_memory_scale
+                full_key_scale += item_key_scale
+                full_value_scale += item_value_scale
+                if item["item_type"] == "edge":
+                    edge_scale += (
+                        item_memory_scale + item_key_scale + item_value_scale
+                    )
+
+        inventory_by_index = {item["item_index"]: item for item in inventory}
+        selected_key_scale = 0
+        selected_value_scale = 0
+        selected_key_accesses = 0
+        selected_value_accesses = 0
+        for layer_id, item_indices in selected[
+            "effective_key_items_by_layer"
+        ].items():
+            selected_key_accesses += len(item_indices)
+            for item_index in item_indices:
+                layer = next(
+                    layer
+                    for layer in inventory_by_index[item_index][
+                        "text_kv_shapes"
+                    ]
+                    if int(layer["layer_id"]) == int(layer_id)
+                )
+                selected_key_scale += scale_bytes(layer["key_shape"])
+        for layer_id, item_indices in selected[
+            "effective_value_items_by_layer"
+        ].items():
+            selected_value_accesses += len(item_indices)
+            for item_index in item_indices:
+                layer = next(
+                    layer
+                    for layer in inventory_by_index[item_index][
+                        "text_kv_shapes"
+                    ]
+                    if int(layer["layer_id"]) == int(layer_id)
+                )
+                selected_value_scale += scale_bytes(layer["value_shape"])
+
+        persistent_scale = memory_scale + full_key_scale + full_value_scale
+        runtime_scale = (
+            memory_scale + selected_key_scale + selected_value_scale
+        )
+        bytes_per_index = 4
+        memory_indices = len(cacheable) * bytes_per_index
+        selected_key_indices = selected_key_accesses * bytes_per_index
+        selected_value_indices = selected_value_accesses * bytes_per_index
+        runtime_indices = (
+            memory_indices + selected_key_indices + selected_value_indices
+        )
+
+        traffic["byte_accounting"] = (
+            "separate_quantized_data_fp32_scale_and_uint32_gather_index"
+        )
+        traffic["logical_data_bytes"] = {
+            "memory_cache": traffic["memory_cache_bytes"],
+            "selected_key": traffic["selected_key_bytes"],
+            "selected_value": traffic["selected_value_bytes"],
+            "full_key": traffic["full_key_bytes"],
+            "full_value": traffic["full_value_bytes"],
+            "edge_cache": traffic["edge_cache_bytes"],
+            "persistent_cache": traffic["persistent_cache_bytes"],
+            "runtime_loaded": traffic["runtime_loaded_cache_bytes"],
+        }
+        traffic["scale_bytes"] = {
+            "dtype": "float32",
+            "memory_cache": memory_scale,
+            "selected_key": selected_key_scale,
+            "selected_value": selected_value_scale,
+            "full_key": full_key_scale,
+            "full_value": full_value_scale,
+            "edge_cache": edge_scale,
+            "persistent_cache": persistent_scale,
+            "runtime_loaded": runtime_scale,
+        }
+        traffic["gather_index_metadata_bytes"] = {
+            "index_dtype": "uint32",
+            "bytes_per_index": bytes_per_index,
+            "memory_item_indices": memory_indices,
+            "selected_key_item_indices": selected_key_indices,
+            "selected_value_item_indices": selected_value_indices,
+            "runtime_loaded": runtime_indices,
+        }
+        traffic["runtime_loaded_scale_bytes"] = runtime_scale
+        traffic["runtime_gather_index_metadata_bytes"] = runtime_indices
+        payload["summary"]["persistent_scale_bytes"] = persistent_scale
+        payload["summary"]["runtime_loaded_scale_bytes"] = runtime_scale
+        payload["summary"][
+            "runtime_gather_index_metadata_bytes"
+        ] = runtime_indices
+        query_file.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n"
+        )
+
+        index = index_by_query[payload["query_id"]]
+        index["runtime_loaded_scale_bytes"] = runtime_scale
+        index["runtime_gather_index_metadata_bytes"] = runtime_indices
+
+    (task_root / "trace_index.jsonl").write_text(
+        "\n".join(json.dumps(entry, sort_keys=True) for entry in index_entries)
+        + "\n"
+    )
+
+
 def check_valid_run(binary: Path) -> None:
     with tempfile.TemporaryDirectory(prefix="patch5-valid-") as temporary:
         directory = Path(temporary)
@@ -84,8 +224,8 @@ def check_valid_run(binary: Path) -> None:
         aggregate = load_rows(directory / "aggregate.csv")
         assert len(per_query) == 32
         assert len(aggregate) == 32
-        assert len(per_query[0]) == 222
-        assert len(aggregate[0]) == 205
+        assert len(per_query[0]) == 229
+        assert len(aggregate[0]) == 212
         assert all(
             None not in row and all(value is not None for value in row.values())
             for row in per_query
@@ -135,6 +275,13 @@ def check_valid_run(binary: Path) -> None:
             "selected_value_ratio",
             "selected_kv_ratio",
             "runtime_loaded_cache_bytes",
+            "traffic_byte_accounting",
+            "persistent_scale_bytes",
+            "runtime_loaded_scale_bytes",
+            "persistent_gather_index_metadata_bytes",
+            "runtime_gather_index_metadata_bytes",
+            "persistent_total_bytes",
+            "runtime_loaded_total_bytes",
             "cache_inventory_sequence_tokens",
             "cache_inventory_valid_text_tokens",
             "selected_sequence_tokens",
@@ -194,6 +341,16 @@ def check_valid_run(binary: Path) -> None:
         assert_close(row["selected_value_ratio"], 2 / 3)
         assert_close(row["selected_kv_ratio"], 2 / 3)
         assert_close(row["runtime_loaded_cache_bytes"], 829440)
+        assert (
+            row["traffic_byte_accounting"]
+            == "quantized_data_only_excluding_scale_and_container_metadata"
+        )
+        assert_close(row["persistent_scale_bytes"], 0)
+        assert_close(row["runtime_loaded_scale_bytes"], 0)
+        assert_close(row["persistent_gather_index_metadata_bytes"], 0)
+        assert_close(row["runtime_gather_index_metadata_bytes"], 0)
+        assert_close(row["persistent_total_bytes"], 844800)
+        assert_close(row["runtime_loaded_total_bytes"], 829440)
         assert_close(row["cache_inventory_sequence_tokens"], 538)
         assert_close(row["cache_inventory_valid_text_tokens"], 26)
         assert_close(row["selected_sequence_tokens"], 270)
@@ -416,6 +573,55 @@ def check_valid_run(binary: Path) -> None:
         )
 
 
+def check_separate_metadata_run(binary: Path) -> None:
+    with tempfile.TemporaryDirectory(prefix="patch5-metadata-valid-") as temporary:
+        directory = Path(temporary)
+        trace_root = directory / "traces"
+        shutil.copytree(FIXTURE_ROOT, trace_root)
+        convert_fixture_to_separate_metadata(trace_root)
+        config = write_config(directory, trace_root)
+        completed = run_simulator(binary, config)
+        assert completed.returncode == 0, completed.stdout
+
+        per_query = load_rows(directory / "per_query.csv")
+        aggregate = load_rows(directory / "aggregate.csv")
+        assert len(per_query) == 32
+        assert len(aggregate) == 32
+        assert len(per_query[0]) == 229
+        assert len(aggregate[0]) == 212
+        row = per_query[0]
+        assert (
+            row["traffic_byte_accounting"]
+            == "separate_quantized_data_fp32_scale_and_uint32_gather_index"
+        )
+        assert_close(row["persistent_cache_bytes"], 844800)
+        assert_close(row["runtime_loaded_cache_bytes"], 829440)
+        assert_close(row["persistent_scale_bytes"], 67584)
+        assert_close(row["runtime_loaded_scale_bytes"], 61440)
+        assert_close(row["persistent_gather_index_metadata_bytes"], 12)
+        assert_close(row["runtime_gather_index_metadata_bytes"], 108)
+        assert_close(row["persistent_total_bytes"], 912396)
+        assert_close(row["runtime_loaded_total_bytes"], 890988)
+        aggregate_row = aggregate[0]
+        assert_close(aggregate_row["runtime_loaded_cache_bytes"], 829440)
+        assert_close(aggregate_row["runtime_loaded_scale_bytes"], 61440)
+        assert_close(
+            aggregate_row["runtime_gather_index_metadata_bytes"], 108
+        )
+        assert_close(aggregate_row["runtime_loaded_total_bytes"], 890988)
+
+        (trace_root / TASK_DIRECTORY / "summary.json").unlink()
+        config.write_text(
+            config.read_text().replace(
+                "validate_summary: true", "validate_summary: false"
+            )
+        )
+        no_task_summary_completed = run_simulator(binary, config)
+        assert no_task_summary_completed.returncode == 0, (
+            no_task_summary_completed.stdout
+        )
+
+
 Mutation = Callable[[Path], None]
 
 
@@ -490,6 +696,24 @@ def check_negative_cases(binary: Path) -> None:
 
         mutate_json(query_path(root), mutation)
 
+    def scale_metadata_mismatch(root: Path) -> None:
+        convert_fixture_to_separate_metadata(root)
+
+        def mutation(payload: dict) -> None:
+            payload["traffic_metadata"]["scale_bytes"]["selected_key"] += 4
+
+        mutate_json(query_path(root), mutation)
+
+    def gather_metadata_mismatch(root: Path) -> None:
+        convert_fixture_to_separate_metadata(root)
+
+        def mutation(payload: dict) -> None:
+            payload["traffic_metadata"]["gather_index_metadata_bytes"][
+                "runtime_loaded"
+            ] += 4
+
+        mutate_json(query_path(root), mutation)
+
     cases = [
         ("index", index_mismatch, "query_id mismatch"),
         ("summary", summary_count, "summary query_count mismatch"),
@@ -500,6 +724,16 @@ def check_negative_cases(binary: Path) -> None:
             "shape",
             shape_token_mismatch,
             "runtime QK token dimension does not match selected/online K",
+        ),
+        (
+            "scale-metadata",
+            scale_metadata_mismatch,
+            "trace scale metadata mismatch",
+        ),
+        (
+            "gather-metadata",
+            gather_metadata_mismatch,
+            "trace gather index metadata mismatch",
         ),
     ]
     for name, mutation, expected_message in cases:
@@ -962,9 +1196,10 @@ def main() -> None:
     if not binary.is_file():
         raise SystemExit(f"Missing analytical_pim binary: {binary}")
     check_valid_run(binary)
+    check_separate_metadata_run(binary)
     check_negative_cases(binary)
     check_patch6_run(binary)
-    print("Patch 5/6 analytical tests passed: valid=9, negative=12")
+    print("Patch 5/6 analytical tests passed: valid=11, negative=14")
 
 
 if __name__ == "__main__":

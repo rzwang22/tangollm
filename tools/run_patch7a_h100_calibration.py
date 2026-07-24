@@ -37,6 +37,9 @@ IDENTITY_COLUMNS = (
 TRACE_FEATURE_COLUMNS = (
     "selected_kv_bytes",
     "runtime_loaded_cache_bytes",
+    "runtime_loaded_scale_bytes",
+    "runtime_gather_index_metadata_bytes",
+    "runtime_loaded_total_bytes",
     "trace_cached_qk_groups",
     "trace_cached_pv_groups",
     "h100_gnn_score_groups",
@@ -383,7 +386,7 @@ def fit_parameters(
     cache_ns_per_byte = fit_slope_origin(
         [
             (
-                number(feature, "runtime_loaded_cache_bytes", "fit"),
+                number(feature, "runtime_loaded_total_bytes", "fit"),
                 number(profile, "cache_read_ns", "fit"),
             )
             for feature, profile in joined
@@ -443,7 +446,7 @@ def predict(
     score = number(feature, "h100_gnn_score_groups", "prediction") * parameters["h100_group_cycles"] * clock_ns
     message = number(feature, "h100_gnn_message_groups", "prediction") * parameters["h100_group_cycles"] * clock_ns
     cached = number(feature, "h100_cached_kv_groups", "prediction") * parameters["h100_group_cycles"] * clock_ns
-    cache = number(feature, "runtime_loaded_cache_bytes", "prediction") / parameters["h100_cache_bytes_per_cycle"] * clock_ns
+    cache = number(feature, "runtime_loaded_total_bytes", "prediction") / parameters["h100_cache_bytes_per_cycle"] * clock_ns
     irregular = cache * (parameters["h100_irregular_gather_penalty"] - 1.0)
     small = (cache + irregular) * (1.0 / parameters["h100_small_batch_efficiency"] - 1.0)
     groups = number(feature, "h100_cached_kv_groups", "prediction")
