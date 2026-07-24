@@ -1,0 +1,32 @@
+Analytical model sanity check
+memory_topology=hbm2e, stacks=5, dies_per_stack=8, channels_per_stack=8, pseudo_channels_per_channel=2, sid_count=2, banks_per_sid_per_pseudo_channel=16, banks_per_pseudo_channel=32, banks_per_stack=512, total_banks=2560, pe_per_bank=1
+memory_tokens=128, hidden_dim=4096, gnn_heads=32, head_dim=128, channel_group=16, groups_per_head=8
+suffix_layers=6, text_len=256, kv_heads=8, kv_bits=2
+text_kv_payload_bytes_per_item=786432, include_scale_metadata=false, scale_metadata_bytes_per_item=0, total_kv_bytes_per_item=786432
+local_buffer: resident_head_tiles=1, concurrent_destinations_per_bank=1, capacity_bytes_per_bank=1024
+cost_model: calibration=provisional_28nm_v1, technology_nm=28.00, frequency_mhz=400.00, inactive_leakage_factor=0.10, status=provisional_not_rtl_cacti_calibrated
+pe_group_cycles: q8k8=1.00, p8v8=1.00, q8k2_lut=1.00, p8v2_lut=1.00, vadd=1.00, gnn_scale=1.00, cached_kv_scale=1.00, cached_kv_lut_scale_overlap=0.00
+hybrid_placement: hot_dst_degree_threshold=64, target_edges_per_bank=32, max_banks_per_destination=16, locality_weight=0.25, bank_balance_weight=1.00, pseudo_channel_balance_weight=1.00
+communication_bandwidth_bytes_per_cycle: q_per_bank=64.00, bank_to_pc_per_bank=32.00, pc_to_global_per_pc=64.00, global_to_npu_per_stack=256.00, global_to_npu_aggregate=1280.00
+reducer: pc_lanes=16, pc_input_bytes_per_cycle=512.00, global_units_per_stack=1, global_lanes_per_unit=64, global_input_bytes_per_cycle_per_stack=1024.00, global_scope=per_stack, cross_stack_merge_lanes=64
+workload_mode=trace, trace_root=/mnt/sevenT/wrz_data/GOFA/cache_data/gofa_cache_exp/combined_m4kv2_h6_s100/traces, tasks=5, splits=2, simulation_splits=2, selection_policy=target_1hop
+GOFA trace validation passed: queries=1000, validation=500, test=500
+Trace simulation selection: queries=1000, splits=validation+test
+Analytical PIM Patch 5 trace-driven run
+workloads=5, graph_placements=1, kv_placements=1, baselines=2, queries=1000
+cora_node/validation/source_dst_locality/kv=balanced local-combine T=4 mean_latency_ns=311501491.20 compute_cycles=123373486.08 communication_cycles=1113292.80 reducer_cycles=110745.60 runtime_loaded_total_bytes=29733523.80 traffic_stall=0.0089 mean_local_reduction=0.6171 bottleneck=pim_cached_kv_scale
+cora_node/test/source_dst_locality/kv=balanced local-combine T=4 mean_latency_ns=318458496.00 compute_cycles=126153523.20 communication_cycles=1115750.40 reducer_cycles=111052.80 runtime_loaded_total_bytes=30849708.00 traffic_stall=0.0087 mean_local_reduction=0.6381 bottleneck=pim_cached_kv_scale
+cora_link/validation/source_dst_locality/kv=balanced local-combine T=4 mean_latency_ns=327425126.40 compute_cycles=129613824.00 communication_cycles=1228062.72 reducer_cycles=125091.84 runtime_loaded_total_bytes=37499629.92 traffic_stall=0.0094 mean_local_reduction=0.6503 bottleneck=pim_cached_kv_scale
+cora_link/test/source_dst_locality/kv=balanced local-combine T=4 mean_latency_ns=319332787.20 compute_cycles=126399283.20 communication_cycles=1208156.16 reducer_cycles=122603.52 runtime_loaded_total_bytes=37836633.24 traffic_stall=0.0094 mean_local_reduction=0.6498 bottleneck=pim_cached_kv_scale
+pubmed_node/validation/source_dst_locality/kv=balanced local-combine T=4 mean_latency_ns=312631372.80 compute_cycles=123597619.20 communication_cycles=1315799.04 reducer_cycles=136058.88 runtime_loaded_total_bytes=40073914.32 traffic_stall=0.0105 mean_local_reduction=0.6543 bottleneck=pim_cached_kv_scale
+pubmed_node/test/source_dst_locality/kv=balanced local-combine T=4 mean_latency_ns=308457600.00 compute_cycles=121926451.20 communication_cycles=1317273.60 reducer_cycles=136243.20 runtime_loaded_total_bytes=40227536.88 traffic_stall=0.0107 mean_local_reduction=0.6501 bottleneck=pim_cached_kv_scale
+wikics/validation/source_dst_locality/kv=balanced local-combine T=4 mean_latency_ns=307609804.80 compute_cycles=122093568.00 communication_cycles=867287.04 reducer_cycles=79994.88 runtime_loaded_total_bytes=20790539.40 traffic_stall=0.0071 mean_local_reduction=0.7814 bottleneck=pim_cached_kv_scale
+wikics/test/source_dst_locality/kv=balanced local-combine T=4 mean_latency_ns=308866560.00 compute_cycles=122575257.60 communication_cycles=885964.80 reducer_cycles=82329.60 runtime_loaded_total_bytes=21391940.88 traffic_stall=0.0072 mean_local_reduction=0.8100 bottleneck=pim_cached_kv_scale
+arxiv/validation/source_dst_locality/kv=balanced local-combine T=4 mean_latency_ns=296350617.60 compute_cycles=117610905.60 communication_cycles=848609.28 reducer_cycles=77660.16 runtime_loaded_total_bytes=19334483.88 traffic_stall=0.0072 mean_local_reduction=0.6505 bottleneck=pim_cached_kv_scale
+arxiv/test/source_dst_locality/kv=balanced local-combine T=4 mean_latency_ns=297710592.00 compute_cycles=118151577.60 communication_cycles=851558.40 reducer_cycles=78028.80 runtime_loaded_total_bytes=19827144.12 traffic_stall=0.0072 mean_local_reduction=0.6868 bottleneck=pim_cached_kv_scale
+per_query_csv=../data/m4kv2_h6_per_query.csv
+aggregate_csv=../data/m4kv2_h6_aggregate.csv
+cost_model_area_mm2=62.380, local_buffer_total_mib=2.500, all_on_leakage_power_w=0.204, calibration=provisional_28nm_v1
+hardware_cost_csv=../data/m4kv2_h6_hardware_cost.csv
+cost_per_query_csv=../data/m4kv2_h6_cost_per_query.csv
+cost_aggregate_csv=../data/m4kv2_h6_cost_aggregate.csv

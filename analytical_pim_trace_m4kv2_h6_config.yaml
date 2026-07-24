@@ -1,0 +1,167 @@
+workload:
+  mode: trace
+
+model:
+  memory_tokens: 128
+  hidden_dim: 4096
+  gnn_heads: 32
+  head_dim: 128
+  suffix_layers: 6
+  text_len: 256
+  kv_heads: 8
+  kv_bits: 2
+  include_scale_metadata: false
+  scale_group_channels: 16
+  scale_bytes: 2
+
+trace_workload:
+  root: /mnt/sevenT/wrz_data/GOFA/cache_data/gofa_cache_exp/combined_m4kv2_h6_s100/traces
+  splits: [validation, test]
+  simulation_splits: [validation, test]
+  expected_queries_per_split: 100
+  expected_batch_size: 1
+  expected_cache_mode: memory_kv
+  expected_selection_policy: target_1hop
+  expected_memory_bits: 4
+  expected_key_bits: 2
+  expected_value_bits: 2
+  expected_gnn_start_layer: 26
+  validate_summary: false
+  tasks:
+    - name: cora_node
+      directory: cora_node_formal_v1
+    - name: cora_link
+      directory: cora_link_formal_v1
+    - name: pubmed_node
+      directory: pubmed_node_formal_v1
+    - name: wikics
+      directory: wikics_formal_v1
+    - name: arxiv
+      directory: arxiv_formal_v1
+
+# Micron-style 16 GB, 8-Hi HBM2E address topology. Each pCH exposes two
+# SID-selected sets of 16 banks: 8 * 2 * 2 * 16 = 512 banks per stack.
+hbm2e:
+  num_stacks: 5
+  dies_per_stack: 8
+  channels_per_stack: 8
+  pseudo_channels_per_channel: 2
+  sid_count: 2
+  banks_per_sid_per_pseudo_channel: 16
+  banks_per_pseudo_channel: 32
+  pe_per_bank: 1
+
+near_bank_pe:
+  q8k8_group_cycles: 1
+  p8v8_group_cycles: 1
+  q8k2_lut_group_cycles: 1
+  p8v2_lut_group_cycles: 1
+  vadd_group_cycles: 1
+  scale_group_cycles: 1
+  cached_kv_lut_scale_overlap: 0
+  softmax_group_cycles: 1
+  scheduling_overhead_per_tile_cycles: 16
+  # The near-bank PE, reducers, and analytical communication fabric share the
+  # 400 MHz architecture clock in this first-order model.
+  clock_ns: 2.5
+
+tile:
+  channel_group: 16
+  head_tile: 1
+  memory_token_tiles: [4]
+
+local_buffer:
+  resident_head_tiles: 1
+  concurrent_destinations_per_bank: 1
+  capacity_bytes_per_bank: 1024
+
+# First-order 28 nm incremental cost model. These coefficients are explicit
+# provisional assumptions, not RTL synthesis, CACTI, or signoff power data.
+# Replace the coefficients with measured reports without changing the event
+# accounting or area/energy equations.
+cost_model:
+  enabled: true
+  calibration_label: provisional_28nm_v1
+  technology_nm: 28
+  frequency_mhz: 400
+  inactive_leakage_factor: 0.10
+  area:
+    pe_logic_um2_per_bank: 15000
+    local_buffer_um2_per_kib: 8000
+    pc_reducer_um2: 25000
+    global_reducer_um2: 100000
+    router_um2_per_stack: 200000
+  dynamic_energy:
+    q8k8_group_pj: 20
+    p8v8_group_pj: 20
+    q8k2_lut_group_pj: 5
+    p8v2_lut_group_pj: 5
+    scale_group_pj: 10
+    vadd_group_pj: 4
+    pc_reduce_group_pj: 4
+    global_reduce_group_pj: 6
+    cross_stack_merge_group_pj: 6
+    local_buffer_read_pj_per_byte: 0.5
+    local_buffer_write_pj_per_byte: 0.6
+    hbm_read_pj_per_bit: 1.45
+    q_broadcast_pj_per_bit: 0.5
+    bank_to_pc_pj_per_bit: 0.5
+    pc_to_global_pj_per_bit: 0.5
+    global_to_npu_pj_per_bit: 0.8
+    hbm_read_peak_bytes_per_cycle_per_bank: 32
+  leakage:
+    pe_mw_per_bank: 0.05
+    local_buffer_mw_per_kib: 0.02
+    pc_reducer_mw: 0.20
+    global_reducer_mw: 0.80
+    router_mw_per_stack: 1.0
+
+workload_suite:
+  seed: 1
+
+hybrid_placement:
+  hot_dst_degree_threshold: 64
+  target_edges_per_bank: 32
+  max_banks_per_destination: 16
+  locality_weight: 0.25
+  bank_balance_weight: 1.0
+  pseudo_channel_balance_weight: 1.0
+
+communication:
+  q_broadcast_bandwidth_bytes_per_cycle_per_bank: 64
+  q_broadcast_startup_cycles: 16
+  bank_to_pc_bandwidth_bytes_per_cycle_per_bank: 32
+  bank_to_pc_startup_cycles: 16
+  pc_to_global_bandwidth_bytes_per_cycle_per_pc: 64
+  pc_to_global_startup_cycles: 32
+  global_to_npu_bandwidth_bytes_per_cycle_per_stack: 256
+  global_to_npu_aggregate_bandwidth_bytes_per_cycle: 1280
+  global_to_npu_startup_cycles: 32
+
+# PC and global reducer resources are instantiated independently per stack.
+reducer:
+  pc_lanes_per_pseudo_channel: 16
+  pc_throughput_groups_per_cycle_per_lane: 1
+  pc_input_bandwidth_bytes_per_cycle: 512
+  pc_concurrent_destination_groups: 64
+  global_units_per_stack: 1
+  global_lanes_per_unit: 64
+  global_throughput_groups_per_cycle_per_lane: 1
+  global_input_bandwidth_bytes_per_cycle_per_stack: 1024
+  global_concurrent_destination_groups: 256
+  cross_stack_merge_lanes: 64
+  cross_stack_merge_throughput_groups_per_cycle_per_lane: 1
+
+# Frozen Patch 6/7 placement and tile. Compare only the two internal PIM paths.
+graph_compute_placement_sweep: [source_dst_locality]
+kv_storage_placement_sweep: [balanced]
+baselines:
+  - pim_selective_kv_no_local_combine
+  - pim_selective_kv_local_combine
+
+output:
+  per_query_csv: ../data/m4kv2_h6_per_query.csv
+  aggregate_csv: ../data/m4kv2_h6_aggregate.csv
+  hardware_cost_csv: ../data/m4kv2_h6_hardware_cost.csv
+  cost_per_query_csv: ../data/m4kv2_h6_cost_per_query.csv
+  cost_aggregate_csv: ../data/m4kv2_h6_cost_aggregate.csv
